@@ -1188,6 +1188,7 @@ function connectSummarySegmentedBar() {
       document.querySelectorAll(".segmented-mode-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       const type = btn.getAttribute("data-summary-type") || btn.getAttribute("data-mode") || "quick";
+      if (summaryContent) summaryContent.scrollTop = 0;
       runSummary(type);
     });
   });
@@ -1242,6 +1243,7 @@ async function runSummary(summaryType = "quick") {
 
 function renderSummaryOutput(markdownText, type, coverage = null) {
   summaryContent.innerHTML = formatMarkdown(markdownText);
+  summaryContent.scrollTop = 0;
 
   // Render sticky audio bar inside the pinned header
   if (summaryAudioBar) {
@@ -1473,7 +1475,8 @@ function switchAiView(viewName) {
     if (documentAiStatus) documentAiStatus.textContent = "Key Takeaways";
     if (aiSummaryView) {
       aiSummaryView.hidden = false;
-      aiSummaryView.style.display = "block";
+      aiSummaryView.style.display = "flex";
+      if (summaryContent) summaryContent.scrollTop = 0;
     }
   }
 }

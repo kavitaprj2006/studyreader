@@ -1716,26 +1716,74 @@ a {
 }
 
 .ai-tool-view {
-  flex: 1;
+  flex: 1 1 0%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+}
+
+#ai-summary-view {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+#ai-summary-view[hidden] {
+  display: none !important;
+}
+
+#ai-summary-view:not([hidden]) {
+  display: flex !important;
+  flex-direction: column !important;
 }
 
 /* Summary Panel Sticky Header & Scrollable Content */
 .summary-sticky-header {
   flex-shrink: 0;
   background: #ffffff;
-  z-index: 5;
-  margin-bottom: 10px;
+  z-index: 10;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
+  position: relative;
 }
 
 .summary-scroll-area {
-  flex: 1;
+  flex: 1 1 0%;
   min-height: 0;
-  overflow-y: auto;
-  padding-right: 6px;
+  height: auto;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding-right: 8px;
+  padding-top: 4px;
+  padding-bottom: 36px;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+#summary-content.document-ai-answer {
+  margin-top: 0;
+}
+
+.summary-scroll-area::-webkit-scrollbar {
+  width: 6px;
+}
+
+.summary-scroll-area::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 3px;
+}
+
+.summary-scroll-area::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.summary-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 .summary-audio-bar {
@@ -1759,7 +1807,7 @@ a {
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 6px;
-  margin-bottom: 12px;
+  margin-left: auto;
 }
 
 .ai-header-controls {
