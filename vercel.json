@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "cleanUrls": true,
-  "trailingSlash": false,
+  "cleanUrls": false,
+  "trailingSlash": true,
   "functions": {
     "api/index.js": {
       "maxDuration": 60
@@ -26,6 +26,26 @@
     {
       "source": "/api/:match*",
       "destination": "/api"
+    },
+    {
+      "source": "/styles/:path*",
+      "destination": "/frontend/styles/:path*"
+    },
+    {
+      "source": "/scripts/:path*",
+      "destination": "/frontend/scripts/:path*"
+    },
+    {
+      "source": "/assets/:path*",
+      "destination": "/frontend/assets/:path*"
+    },
+    {
+      "source": "/components/:path*",
+      "destination": "/frontend/components/:path*"
+    },
+    {
+      "source": "/shared/:path*",
+      "destination": "/frontend/shared/:path*"
     }
   ]
 }
