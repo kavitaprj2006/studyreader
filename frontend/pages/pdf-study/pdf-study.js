@@ -124,6 +124,34 @@ let activeSpeechState = {
   utterance: null
 };
 
+function stopAllSpeechAudio() {
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (_) {}
+  }
+  if (window.StudyReaderReadAloud && typeof window.StudyReaderReadAloud.stop === "function") {
+    try {
+      window.StudyReaderReadAloud.stop();
+    } catch (_) {}
+  }
+  if (activeSpeechState && activeSpeechState.btnElement) {
+    try {
+      activeSpeechState.btnElement.innerHTML = "<span>🔊</span> Listen";
+    } catch (_) {}
+  }
+  activeSpeechState = {
+    rawText: "",
+    btnElement: null,
+    speedSelect: null,
+    utterance: null
+  };
+  if (readAloudPanel) {
+    readAloudPanel.hidden = true;
+    readAloudPanel.style.display = "none";
+  }
+}
+
 /* ============================================================
    STATE
    ============================================================ */
@@ -161,6 +189,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Listen to browser navigation (back/forward between opened documents)
   window.addEventListener("popstate", () => {
+    stopAllSpeechAudio();
     const params = new URLSearchParams(window.location.search);
     const newId = params.get("id");
     if (newId && newId !== currentPdfId) {
@@ -168,6 +197,14 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (!newId) {
       showEmptySelectionState();
     }
+  });
+
+  // Stop active speech when navigating away from workspace
+  window.addEventListener("beforeunload", () => {
+    stopAllSpeechAudio();
+  });
+  window.addEventListener("pagehide", () => {
+    stopAllSpeechAudio();
   });
 
   if (!currentPdfId) {
@@ -183,6 +220,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function openDocument(id, updateHistory = true) {
   if (!id) return;
+  stopAllSpeechAudio();
   currentPdfId = id;
 
   if (updateHistory) {
@@ -217,6 +255,7 @@ async function openDocument(id, updateHistory = true) {
 }
 
 function showEmptySelectionState() {
+  stopAllSpeechAudio();
   currentPdfId = null;
   if (pdfTitle) pdfTitle.textContent = "StudyReader Workspace";
   if (pdfStatus) pdfStatus.textContent = "No document selected";
@@ -263,6 +302,8 @@ function showEmptySelectionState() {
    ============================================================ */
 
 async function loadSelectedPDF() {
+  stopAllSpeechAudio();
+
   if (!currentPdfId) {
     showEmptySelectionState();
     return;
@@ -503,6 +544,7 @@ function connectViewerControls() {
   fitWidthButton.addEventListener("click", fitWidth);
 
   backToLibrary.addEventListener("click", () => {
+    stopAllSpeechAudio();
     window.location.href = "../library/index.html";
   });
 
@@ -516,13 +558,7 @@ function connectViewerControls() {
 
   if (btnCloseReadAloud) {
     btnCloseReadAloud.addEventListener("click", () => {
-      if (window.StudyReaderReadAloud && typeof window.StudyReaderReadAloud.stop === "function") {
-        window.StudyReaderReadAloud.stop();
-      }
-      if (readAloudPanel) {
-        readAloudPanel.hidden = true;
-        readAloudPanel.style.display = "none";
-      }
+      stopAllSpeechAudio();
       setActiveStudyTool("view");
     });
   }
@@ -1573,15 +1609,24 @@ function connectModalsAndEmptyState() {
 
   // Empty state actions
   if (btnEmptyChooseLibrary) {
-    btnEmptyChooseLibrary.addEventListener("click", () => openLibraryPicker());
+    btnEmptyChooseLibrary.addEventListener("click", () => {
+      stopAllSpeechAudio();
+      openLibraryPicker();
+    });
   }
   if (btnEmptyUploadDoc) {
-    btnEmptyUploadDoc.addEventListener("click", () => openWorkspaceUpload());
+    btnEmptyUploadDoc.addEventListener("click", () => {
+      stopAllSpeechAudio();
+      openWorkspaceUpload();
+    });
   }
 
   // Topbar switch doc button
   if (btnSwitchDoc) {
-    btnSwitchDoc.addEventListener("click", () => openLibraryPicker());
+    btnSwitchDoc.addEventListener("click", () => {
+      stopAllSpeechAudio();
+      openLibraryPicker();
+    });
   }
 
   // Button inside library picker to open upload modal
@@ -1612,6 +1657,7 @@ function connectModalsAndEmptyState() {
 }
 
 async function openLibraryPicker() {
+  stopAllSpeechAudio();
   if (!modalLibraryPicker) return;
   if (typeof modalLibraryPicker.showModal === "function") {
     modalLibraryPicker.showModal();

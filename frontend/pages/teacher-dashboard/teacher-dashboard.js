@@ -484,38 +484,64 @@ if (uploadResourceForm) {
 // ============================================================
 
 async function openRosterModal(classroomId, className, classCode) {
-  document.getElementById("roster-class-name").textContent = `${className} — Enrolled Students`;
-  document.getElementById("roster-class-meta").textContent = `Classroom Code: ${classCode}`;
-  const tbody = document.getElementById("roster-table-body");
-  tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">Loading enrolled students...</td></tr>`;
+  const nameEl = document.getElementById("roster-class-name");
+  const codeEl = document.getElementById("roster-class-code");
+  const rosterTable = document.getElementById("roster-table");
+  const rosterEmpty = document.getElementById("roster-empty");
+  const tbody = document.getElementById("roster-students-list");
+
+  if (nameEl) nameEl.textContent = `${className || "Classroom"} — Enrolled Students`;
+  if (codeEl) codeEl.textContent = classCode ? `Classroom Code: ${classCode}` : "";
+
+  // Reset visibility to loading state
+  if (rosterEmpty) rosterEmpty.style.display = "none";
+  if (rosterTable) rosterTable.style.display = "table";
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading enrolled students...</td></tr>`;
+  }
 
   openModal("modal-roster");
 
   try {
-    const res = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}`, {
+    const res = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(classroomId)}`, {
       credentials: "include"
     });
-    if (!res.ok) throw new Error("Could not load roster.");
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || "Could not load roster.");
+    }
 
     const data = await res.json();
     const students = data.students || [];
 
     if (students.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary); padding: 24px;">No students have joined this classroom yet. Share the code <strong>${escapeHTML(classCode)}</strong> with your students!</td></tr>`;
+      if (rosterTable) rosterTable.style.display = "none";
+      if (rosterEmpty) {
+        rosterEmpty.style.display = "block";
+        rosterEmpty.innerHTML = `<p>No students have joined this classroom yet. Share the code <strong>${escapeHTML(classCode)}</strong> to invite students!</p>`;
+      }
       return;
     }
 
-    tbody.innerHTML = students.map((s) => `
-      <tr>
-        <td><strong>${escapeHTML(s.name)}</strong></td>
-        <td style="color: var(--text-secondary);">${escapeHTML(s.email)}</td>
-        <td style="color: var(--text-light);">${formatDate(s.joinedAt)}</td>
-      </tr>
-    `).join("");
+    if (rosterEmpty) rosterEmpty.style.display = "none";
+    if (rosterTable) rosterTable.style.display = "table";
+    if (tbody) {
+      tbody.innerHTML = students.map((s) => `
+        <tr>
+          <td><strong>${escapeHTML(s.name)}</strong></td>
+          <td style="color: var(--text-secondary);">${escapeHTML(s.email)}</td>
+          <td style="color: var(--text-light);">${formatDate(s.joinedAt)}</td>
+        </tr>
+      `).join("");
+    }
 
   } catch (err) {
     console.error("Roster error:", err);
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #dc2626;">Failed to load roster.</td></tr>`;
+    if (rosterEmpty) rosterEmpty.style.display = "none";
+    if (rosterTable) rosterTable.style.display = "table";
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load roster: ${escapeHTML(err.message)}</td></tr>`;
+    }
   }
 }
 

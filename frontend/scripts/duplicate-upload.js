@@ -130,19 +130,21 @@
       }
 
       const completion = onComplete;
+      const cancelCb = onCancelCallback;
       const completedAction = action;
       pendingData = null;
       onComplete = null;
+      onCancelCallback = null;
       dialog.close();
 
-      if (completion) {
-        await completion();
-      }
-
-      if (completedAction === "keep-both") {
-        window.alert("Both files have been kept.");
-      } else if (completedAction === "replace") {
-        window.alert("The existing file has been replaced.");
+      if (completedAction === "cancel") {
+        if (cancelCb) {
+          await cancelCb();
+        }
+      } else {
+        if (completion) {
+          await completion();
+        }
       }
     } catch (error) {
       console.error("Duplicate upload action failed:", error);
@@ -164,37 +166,50 @@
 
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    setStatus("Choose an option below to finish handling this duplicate.");
+    performAction("cancel");
   });
 
-  window.StudyReaderDuplicateUpload = {
-    open(data, refresh) {
-      if (
-        !data ||
-        !data.pendingUpload ||
-        typeof data.pendingUpload.filename !== "string" ||
-        !data.pendingUpload.filename ||
-        !data.existingPdf ||
-        !data.existingPdf.id
-      ) {
-        throw new Error("The server returned incomplete duplicate-file details.");
-      }
-
-      if (dialog.open) {
-        throw new Error("Finish handling the current duplicate before uploading another.");
-      }
-
-      pendingData = data;
-      onComplete = typeof refresh === "function" ? refresh : null;
-
-      dialog.querySelector("#duplicate-file-name").textContent =
-        data.pendingUpload.originalFilename || "Unnamed file";
-      dialog.querySelector("#duplicate-file-size").textContent =
-        formatFileSize(Number(data.pendingUpload.fileSize));
-      setStatus("");
-
-      dialog.showModal();
-      actionButtons[0].focus();
+  function handleOpen(dataOrOptions, callback) {
+    if (!dataOrOptions) {
+      throw new Error("The server returned incomplete duplicate-file details.");
     }
+
+    // Support both open(data, refresh) and show({ pendingUpload, existingPdf, onSuccess, onCancel })
+    const pendingUpload = dataOrOptions.pendingUpload || dataOrOptions;
+    const existingPdf = dataOrOptions.existingPdf;
+    const successCb = typeof callback === "function" ? callback : dataOrOptions.onSuccess;
+    const cancelCb = typeof dataOrOptions.onCancel === "function" ? dataOrOptions.onCancel : null;
+
+    if (
+      !pendingUpload ||
+      typeof pendingUpload.filename !== "string" ||
+      !pendingUpload.filename ||
+      !existingPdf ||
+      !existingPdf.id
+    ) {
+      throw new Error("The server returned incomplete duplicate-file details.");
+    }
+
+    if (dialog.open) {
+      return;
+    }
+
+    pendingData = { pendingUpload, existingPdf };
+    onComplete = typeof successCb === "function" ? successCb : null;
+    onCancelCallback = cancelCb;
+
+    dialog.querySelector("#duplicate-file-name").textContent =
+      pendingUpload.originalFilename || "Unnamed file";
+    dialog.querySelector("#duplicate-file-size").textContent =
+      formatFileSize(Number(pendingUpload.fileSize));
+    setStatus("");
+
+    dialog.showModal();
+    actionButtons[0].focus();
+  }
+
+  window.StudyReaderDuplicateUpload = {
+    open: handleOpen,
+    show: handleOpen
   };
 })();
