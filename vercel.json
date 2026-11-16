@@ -13,49 +13,19 @@
       "schedule": "0 0 * * *"
     }
   ],
-  "routes": [
+  "redirects": [
+    { "source": "/", "destination": "/frontend/pages/login/index.html", "permanent": false },
+    { "source": "/login", "destination": "/frontend/pages/login/index.html", "permanent": false },
+    { "source": "/signup", "destination": "/frontend/pages/signup/index.html", "permanent": false },
+    { "source": "/dashboard", "destination": "/frontend/pages/dashboard/index.html", "permanent": false },
+    { "source": "/teacher-dashboard", "destination": "/frontend/pages/teacher-dashboard/index.html", "permanent": false },
+    { "source": "/library", "destination": "/frontend/pages/library/index.html", "permanent": false },
+    { "source": "/pdf-study", "destination": "/frontend/pages/pdf-study/index.html", "permanent": false }
+  ],
+  "rewrites": [
     {
-      "src": "^/api/(.*)$",
-      "dest": "/api/index.js"
-    },
-    {
-      "src": "^/$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/login/index.html" }
-    },
-    {
-      "src": "^/login/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/login/index.html" }
-    },
-    {
-      "src": "^/signup/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/signup/index.html" }
-    },
-    {
-      "src": "^/dashboard/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/dashboard/index.html" }
-    },
-    {
-      "src": "^/teacher-dashboard/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/teacher-dashboard/index.html" }
-    },
-    {
-      "src": "^/library/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/library/index.html" }
-    },
-    {
-      "src": "^/pdf-study/?$",
-      "status": 307,
-      "headers": { "Location": "/frontend/pages/pdf-study/index.html" }
-    },
-    {
-      "src": "^/(.*)",
-      "dest": "/$1"
+      "source": "/api/:match*",
+      "destination": "/api"
     }
   ]
 }
