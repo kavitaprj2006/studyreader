@@ -35,8 +35,13 @@
       return LOCAL_BACKEND_URL;
     }
 
-    // Deployed environment (Vercel, custom domain, etc.)
-    return PRODUCTION_BACKEND_URL;
+    // If deployed on Vercel or any unified cloud host, use same-origin
+    if (hostname.endsWith(".vercel.app") || window.location.port === "3000") {
+      return window.location.origin;
+    }
+
+    // Deployed environment with standalone backend (Render fallback)
+    return PRODUCTION_BACKEND_URL || window.location.origin;
   }
 
   const resolvedApiBaseUrl = determineApiBaseUrl();

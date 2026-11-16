@@ -15,19 +15,11 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
-const { Pool } = require("pg");
+const { pool } = require("../db");
 const cloudStorage = require("../services/storage/cloud-storage");
 const embeddingService = require("../services/ai/embedding-service");
 
 const BASE_URL = process.env.TEST_API_URL || "http://localhost:3000";
-
-const pool = new Pool({
-  host: process.env.DB_HOST || "localhost",
-  port: Number(process.env.DB_PORT) || 5432,
-  database: process.env.DB_NAME || "studyreader",
-  user: process.env.DB_USER || "postgres",
-  password: process.env.DB_PASSWORD,
-});
 
 class CookieJar {
   constructor() {
@@ -99,6 +91,97 @@ startxref
 
 let passedTests = 0;
 let totalTests = 0;
+let skippedTests = 0;
+
+// Tracked records created specifically during this test execution
+const trackedRecords = {
+  users: new Set(),
+  classrooms: new Set(),
+  pdfs: new Set(),
+  jobs: new Set(),
+  files: new Set()
+};
+
+async function cleanupTestExecutionRecords() {
+  const userIds = Array.from(trackedRecords.users).filter(Boolean);
+  const classroomIds = Array.from(trackedRecords.classrooms).filter(Boolean);
+  const pdfIds = Array.from(trackedRecords.pdfs).filter(Boolean);
+  const jobIds = Array.from(trackedRecords.jobs).filter(Boolean);
+  const filePaths = Array.from(trackedRecords.files).filter(Boolean);
+
+  if (userIds.length === 0 && classroomIds.length === 0 && pdfIds.length === 0 && jobIds.length === 0) {
+    return;
+  }
+
+  console.log("\n[Teardown] Cleaning up only records created during this execution...");
+  console.log(`  Tracked Users: [${userIds.join(", ")}]`);
+  console.log(`  Tracked Classrooms: [${classroomIds.join(", ")}]`);
+  console.log(`  Tracked PDFs: [${pdfIds.join(", ")}]`);
+  console.log(`  Tracked Jobs: [${jobIds.join(", ")}]`);
+  console.log(`  Tracked Files: [${filePaths.join(", ")}]`);
+
+  try {
+    if (pdfIds.length > 0 || jobIds.length > 0 || userIds.length > 0) {
+      await pool.query(
+        `DELETE FROM analytics_events 
+         WHERE (entity_type = 'pdfs' AND entity_id = ANY($1::bigint[]))
+            OR (entity_type = 'document_jobs' AND entity_id = ANY($2::bigint[]))
+            OR (user_id = ANY($3::bigint[]))`,
+        [pdfIds, jobIds, userIds]
+      );
+    }
+
+    if (pdfIds.length > 0) {
+      await pool.query(`DELETE FROM pdf_chunks WHERE pdf_id = ANY($1::bigint[])`, [pdfIds]);
+    }
+
+    if (jobIds.length > 0 || pdfIds.length > 0) {
+      await pool.query(
+        `DELETE FROM document_jobs WHERE id = ANY($1::bigint[]) OR pdf_id = ANY($2::bigint[])`,
+        [jobIds, pdfIds]
+      );
+    }
+
+    if (pdfIds.length > 0 || userIds.length > 0) {
+      await pool.query(
+        `DELETE FROM chat_messages WHERE pdf_id = ANY($1::bigint[]) OR user_id = ANY($2::bigint[])`,
+        [pdfIds, userIds]
+      );
+    }
+
+    if (classroomIds.length > 0 || userIds.length > 0) {
+      await pool.query(
+        `DELETE FROM classroom_members WHERE classroom_id = ANY($1::bigint[]) OR student_id = ANY($2::bigint[])`,
+        [classroomIds, userIds]
+      );
+      await pool.query(
+        `DELETE FROM classroom_subjects WHERE classroom_id = ANY($1::bigint[])`,
+        [classroomIds]
+      );
+    }
+
+    if (pdfIds.length > 0) {
+      await pool.query(`DELETE FROM pdfs WHERE id = ANY($1::bigint[])`, [pdfIds]);
+    }
+
+    if (classroomIds.length > 0) {
+      await pool.query(`DELETE FROM classrooms WHERE id = ANY($1::bigint[])`, [classroomIds]);
+    }
+
+    if (userIds.length > 0) {
+      await pool.query(`DELETE FROM users WHERE id = ANY($1::bigint[])`, [userIds]);
+    }
+
+    for (const f of filePaths) {
+      try {
+        await cloudStorage.deleteFile(f);
+      } catch (_) {}
+    }
+    console.log("  ✔ Teardown completed successfully for tracked execution records.");
+  } catch (cleanErr) {
+    console.warn("  ⚠ Teardown warning:", cleanErr.message);
+  }
+}
 
 function assert(condition, message) {
   totalTests++;
@@ -176,6 +259,7 @@ async function runTestSuite() {
     assert(regTeach.status === 201, "Teacher registered successfully (201)");
     const teachData = JSON.parse(regTeachText);
     teacherId = teachData.user.id;
+    trackedRecords.users.add(teacherId);
 
     // Register Student
     const regStud = await request("/api/auth/register", {
@@ -186,6 +270,7 @@ async function runTestSuite() {
     assert(regStud.status === 201, "Student registered successfully (201)");
     const studData = await regStud.json();
     studentId = studData.user.id;
+    trackedRecords.users.add(studentId);
 
     // Login Admin
     const loginAdmin = await request("/api/auth/login", {
@@ -213,6 +298,7 @@ async function runTestSuite() {
     assert(createClassRes.status === 201, "Teacher created classroom CS-401 (201)");
     const classData = await createClassRes.json();
     classroomId = classData.classroom.id;
+    trackedRecords.classrooms.add(classroomId);
     initialCode = classData.classroom.code;
     assert(Boolean(initialCode), `Classroom code generated: ${initialCode}`);
 
@@ -233,6 +319,8 @@ async function runTestSuite() {
     assert(Boolean(presignData.pdfId), "Pending PDF ID created");
     uploadedPdfId = presignData.pdfId;
     uploadedStoragePath = presignData.storagePath;
+    trackedRecords.pdfs.add(uploadedPdfId);
+    if (uploadedStoragePath) trackedRecords.files.add(uploadedStoragePath);
 
     // Direct binary upload to the uploadUrl
     const pdfBuffer = createDummyPdfBuffer();
@@ -253,6 +341,7 @@ async function runTestSuite() {
     const finalizeData = await finalizeRes.json();
     assert(Boolean(finalizeData.jobId), "Finalize enqueued background processing job");
     enqueuedJobId = finalizeData.jobId;
+    trackedRecords.jobs.add(enqueuedJobId);
 
     // Unauthenticated access to /uploads is blocked
     const unauthUploads = await request(`/uploads/${uploadedStoragePath}`);
@@ -425,28 +514,30 @@ async function runTestSuite() {
     assert(hasApiRoute, "vercel.json routes /api/* to api/index.js");
 
     console.log("\n==================================================================");
-    console.log(`\x1b[32m✔ SUCCESS: ALL ${passedTests}/${totalTests} CLOUD ARCHITECTURE TESTS PASSED!\x1b[0m`);
+    console.log(`\x1b[32m✔ SUCCESS: ALL ${passedTests}/${totalTests} CLOUD ARCHITECTURE TESTS PASSED! (${skippedTests} skipped)\x1b[0m`);
     console.log("==================================================================");
 
   } catch (err) {
-    console.error(`\n\x1b[31m✖ TEST SUITE ABORTED:\x1b[0m`, err);
-    process.exit(1);
+    console.error(`\n\x1b[31m✖ TEST SUITE ABORTED:\x1b[0m`, err.message);
+    suiteError = err;
   } finally {
-    // Cleanup temporary test classroom and PDF
-    if (classroomId) {
-      await pool.query("DELETE FROM classrooms WHERE id = $1", [classroomId]).catch(() => {});
-    }
-    if (teacherId) {
-      await pool.query("DELETE FROM users WHERE id = $1", [teacherId]).catch(() => {});
-    }
-    if (studentId) {
-      await pool.query("DELETE FROM users WHERE id = $1", [studentId]).catch(() => {});
-    }
-    if (uploadedStoragePath) {
-      await cloudStorage.deleteFile(uploadedStoragePath).catch(() => {});
-    }
+    // Teardown ONLY the records created during this execution
+    await cleanupTestExecutionRecords();
     await pool.end();
   }
+
+  if (suiteError) {
+    process.exit(1);
+  }
 }
+
+let suiteError = null;
+
+process.on("SIGINT", async () => {
+  console.log("\n[INTERRUPTED] Cleaning up before exit...");
+  await cleanupTestExecutionRecords();
+  await pool.end();
+  process.exit(130);
+});
 
 runTestSuite();

@@ -1,18 +1,23 @@
 /**
- * StudyReader — Cloud Storage Service (Cloudflare R2 + Firebase / Private Fallback)
+ * StudyReader — Unified Cloud Storage Service
  * 
- * Implements private cloud storage with:
- * - Cloudflare R2 (S3-compatible via AWS SDK v3)
- * - Firebase Storage & Local Private Bucket fallback
+ * Implements private cloud storage with a provider-independent interface:
+ * - Supabase Storage (Primary / Active Provider)
+ * - Cloudflare R2 (Reserved / Inactive Future Option — fully retained)
+ * - Local Private Bucket (Offline development fallback)
+ * 
+ * Capabilities:
  * - Presigned direct-to-cloud upload URLs (PUT)
  * - Short-lived presigned download/view URLs (GET)
  * - Direct object streaming and temp downloads for background workers
+ * - File existence, metadata, and deletion
  */
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const supabaseStorage = require("./supabase-storage");
 const firebaseStorage = require("./firebase-storage");
 
 let S3Client = null;
@@ -62,43 +67,64 @@ function computeMd5(filePath) {
 class CloudStorageService {
   constructor() {
     this.isInitialized = false;
-    this.provider = "fallback"; // "r2" | "firebase" | "fallback"
+    this.provider = "fallback"; // "supabase" | "r2" | "firebase" | "local_private"
     this.s3Client = null;
-    this.bucketName = process.env.R2_BUCKET_NAME || process.env.FIREBASE_STORAGE_BUCKET || "studyreader-documents";
+    this.bucketName = process.env.SUPABASE_STORAGE_BUCKET || process.env.R2_BUCKET_NAME || process.env.FIREBASE_STORAGE_BUCKET || "studyreader";
     this.endpoint = process.env.R2_ENDPOINT || (process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
     this.secretSignKey = process.env.SESSION_SECRET || "studyreader-signed-url-secret-2026";
   }
 
-  initialize() {
-    if (this.isInitialized) return;
+  initialize(force = false) {
+    if (this.isInitialized && !force) return;
 
+    const configuredProvider = (process.env.STORAGE_PROVIDER || "supabase").toLowerCase().trim();
     const r2AccessKey = process.env.R2_ACCESS_KEY_ID;
     const r2SecretKey = process.env.R2_SECRET_ACCESS_KEY;
+    this.endpoint = process.env.R2_ENDPOINT || (process.env.R2_ACCOUNT_ID ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : null);
 
-    if (S3Client && r2AccessKey && r2SecretKey && this.endpoint) {
-      try {
-        this.s3Client = new S3Client({
-          region: "auto",
-          endpoint: this.endpoint,
-          credentials: {
-            accessKeyId: r2AccessKey,
-            secretAccessKey: r2SecretKey
-          }
-        });
-        this.provider = "r2";
-        console.log(`[CloudStorage] Connected to Cloudflare R2 (bucket: ${this.bucketName}, endpoint: ${this.endpoint})`);
-      } catch (err) {
-        console.warn(`[CloudStorage] Failed to initialize Cloudflare R2: ${err.message}. Falling back to Firebase/Local private storage.`);
-        this.provider = "firebase";
+    if (configuredProvider === "r2") {
+      this.bucketName = process.env.R2_BUCKET_NAME || "studyreader-documents";
+      if (S3Client && r2AccessKey && r2SecretKey && this.endpoint) {
+        try {
+          this.s3Client = new S3Client({
+            region: "auto",
+            endpoint: this.endpoint,
+            credentials: {
+              accessKeyId: r2AccessKey,
+              secretAccessKey: r2SecretKey
+            }
+          });
+          this.provider = "r2";
+          console.log(`[CloudStorage] Connected to Cloudflare R2 (bucket: ${this.bucketName}, endpoint: ${this.endpoint})`);
+        } catch (err) {
+          console.warn(`[CloudStorage] Failed to initialize Cloudflare R2: ${err.message}. Falling back to local private storage.`);
+          this.provider = "local_private";
+        }
+      } else {
+        console.warn(`[CloudStorage] Cloudflare R2 selected but credentials incomplete. Falling back to local private storage.`);
+        this.provider = "local_private";
       }
-    } else {
-      this.provider = "firebase";
-    }
-
-    if (this.provider === "firebase") {
+    } else if (configuredProvider === "supabase") {
+      supabaseStorage.initialize();
+      this.bucketName = supabaseStorage.bucketName;
+      if (supabaseStorage.isConfigured) {
+        this.provider = "supabase";
+        console.log(`[CloudStorage] Active storage provider: Supabase Storage (bucket: ${this.bucketName}, endpoint: ${supabaseStorage.supabaseUrl})`);
+      } else if (process.env.STORAGE_PROVIDER === "supabase") {
+        this.provider = "supabase";
+        console.warn(`[CloudStorage] Provider configured as 'supabase', but SUPABASE_URL / SUPABASE_SECRET_KEY are not set.`);
+      } else {
+        this.provider = "local_private";
+        console.log(`[CloudStorage] Operating with storage provider: local_private (fallback for offline development)`);
+      }
+    } else if (configuredProvider === "firebase") {
       firebaseStorage.initialize();
+      this.bucketName = process.env.FIREBASE_STORAGE_BUCKET || "studyreader-documents";
       this.provider = firebaseStorage.useLiveFirebase ? "firebase" : "local_private";
       console.log(`[CloudStorage] Operating with storage provider: ${this.provider}`);
+    } else {
+      this.provider = "local_private";
+      console.log(`[CloudStorage] Operating with storage provider: local_private`);
     }
 
     this.isInitialized = true;
@@ -109,16 +135,26 @@ class CloudStorageService {
     return this.provider;
   }
 
+  async ensureBucket() {
+    this.initialize();
+    if (this.provider === "supabase") {
+      return await supabaseStorage.ensureBucket();
+    }
+  }
+
   /**
    * Generates a presigned upload URL for direct client-to-storage PUT upload.
-   * If R2 is active, returns direct S3 presigned PUT URL.
-   * If fallback/firebase is active, returns secure backend direct-upload URL.
+   * Supabase: returns signed PUT upload URL with token.
+   * R2: returns direct S3 presigned PUT URL.
+   * Fallback: returns secure backend direct-upload URL.
    */
   async getPresignedUploadUrl(storagePath, contentType = "application/pdf", expiresInMinutes = 15) {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.getPresignedUploadUrl(cleanDest, contentType, expiresInMinutes);
+    } else if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
         Key: cleanDest,
@@ -190,7 +226,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.saveBuffer(cleanDest, buffer, contentType);
+    } else if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
         Key: cleanDest,
@@ -247,7 +285,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.getPresignedDownloadUrl(cleanDest, expiresInMinutes);
+    } else if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
         Key: cleanDest
@@ -285,7 +325,9 @@ class CloudStorageService {
     const md5Hash = await computeMd5(localFilePath);
     const mimeType = getMimeType(localFilePath);
 
-    if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.uploadFile(localFilePath, cleanDest, metadata);
+    } else if (this.provider === "r2" && this.s3Client && PutObjectCommand) {
       const fileStream = fs.createReadStream(localFilePath);
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
@@ -317,7 +359,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && HeadObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.fileExists(cleanDest);
+    } else if (this.provider === "r2" && this.s3Client && HeadObjectCommand) {
       try {
         await this.s3Client.send(
           new HeadObjectCommand({
@@ -344,7 +388,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && HeadObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.headObject(cleanDest);
+    } else if (this.provider === "r2" && this.s3Client && HeadObjectCommand) {
       try {
         const res = await this.s3Client.send(
           new HeadObjectCommand({
@@ -385,7 +431,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
+    if (this.provider === "supabase") {
+      return supabaseStorage.getFileStream(cleanDest);
+    } else if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
       const { PassThrough } = require("stream");
       const passThrough = new PassThrough();
       const command = new GetObjectCommand({
@@ -412,7 +460,9 @@ class CloudStorageService {
     this.initialize();
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.downloadToTemp(cleanDest);
+    } else if (this.provider === "r2" && this.s3Client && GetObjectCommand) {
       const ext = path.extname(cleanDest) || ".bin";
       const tempFile = path.join(os.tmpdir(), `studyreader-r2-${Date.now()}-${crypto.randomBytes(4).toString("hex")}${ext}`);
       const command = new GetObjectCommand({
@@ -440,7 +490,9 @@ class CloudStorageService {
     if (!storagePath) return;
     const cleanDest = storagePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-    if (this.provider === "r2" && this.s3Client && DeleteObjectCommand) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.deleteFile(cleanDest);
+    } else if (this.provider === "r2" && this.s3Client && DeleteObjectCommand) {
       try {
         await this.s3Client.send(
           new DeleteObjectCommand({
@@ -461,7 +513,9 @@ class CloudStorageService {
    */
   async getStorageMetrics() {
     this.initialize();
-    if (this.provider === "r2" && this.s3Client && ListObjectsV2Command) {
+    if (this.provider === "supabase") {
+      return await supabaseStorage.getStorageMetrics();
+    } else if (this.provider === "r2" && this.s3Client && ListObjectsV2Command) {
       let totalFiles = 0;
       let totalBytes = 0;
       let continuationToken = null;

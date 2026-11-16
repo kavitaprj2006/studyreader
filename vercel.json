@@ -2,6 +2,17 @@
   "version": 2,
   "cleanUrls": true,
   "trailingSlash": false,
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/jobs/process-batch?limit=2&timeBudgetMs=8000",
+      "schedule": "0 0 * * *"
+    }
+  ],
   "routes": [
     {
       "src": "^/api/(.*)$",

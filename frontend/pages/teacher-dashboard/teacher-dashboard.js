@@ -405,7 +405,7 @@ if (uploadResourceForm) {
     const classroomId = document.getElementById("select-upload-classroom").value;
     const subjectId = document.getElementById("select-upload-subject").value;
     const category = document.getElementById("select-upload-category").value;
-    const academicYear = document.getElementById("input-upload-year").value.trim();
+    const academicYear = document.getElementById("input-upload-year")?.value?.trim() || "";
     const fileInput = document.getElementById("input-upload-file");
 
     if (!fileInput.files || fileInput.files.length === 0) {
@@ -618,7 +618,7 @@ const uploadResourceButtons = document.querySelectorAll(
 uploadResourceButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     if (teacherClassrooms.length === 0) {
-      alert("Please create a classroom and add a subject first before publishing materials.");
+      showToast("Please create a classroom and add a subject first before publishing materials.");
       openModal("modal-create-classroom");
       return;
     }

@@ -18,7 +18,7 @@ const ragService =
   require("./services/ai/rag-service");
 const cloudStorage =
   require("./services/storage/cloud-storage");
-const firebaseStorage = cloudStorage; // Unified cloud storage (R2 + Firebase fallback)
+const firebaseStorage = cloudStorage; // Backwards-compatible alias for cloudStorage (Supabase / R2 / Fallback)
 const JobProcessor =
   require("./services/queue/job-processor");
 const embeddingService =
@@ -137,38 +137,7 @@ const upload = multer({
 // PostgreSQL Connection Pool (Supports Neon & Local DB)
 // ============================================================
 
-const useSsl = Boolean(
-  process.env.DATABASE_URL ||
-  process.env.DB_SSL === "true" ||
-  (isProduction && !process.env.DB_HOST?.includes("localhost") && !process.env.DB_HOST?.includes("127.0.0.1"))
-);
-
-const poolConfig = process.env.DATABASE_URL
-  ? {
-      connectionString: process.env.DATABASE_URL,
-      ssl: useSsl ? { rejectUnauthorized: false } : false,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    }
-  : {
-      host: process.env.DB_HOST || "localhost",
-      port: Number(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || "studyreader",
-      user: process.env.DB_USER || "postgres",
-      password: process.env.DB_PASSWORD,
-      ssl: useSsl ? { rejectUnauthorized: false } : false,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    };
-
-const pool = new Pool(poolConfig);
-
-// Log unexpected database errors
-pool.on("error", (err) => {
-  console.error("Unexpected PostgreSQL pool error:", err);
-});
+const { pool } = require("./db");
 
 // Initialize Background Job Processor
 const jobProcessor = new JobProcessor(pool);
@@ -211,17 +180,28 @@ app.use(
     cookie: {
       httpOnly: true,
       secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
+      sameSite: process.env.COOKIE_SAME_SITE || "lax",
       maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
     },
   })
 );
 
 // ============================================================
-// Basic Routes
+// Basic Routes & Static Frontend Serving
 // ============================================================
 
+// Serve static frontend assets for local development
+app.use(express.static(path.join(__dirname, "..")));
+app.use("/frontend", express.static(path.join(__dirname, "../frontend")));
+app.use("/pages", express.static(path.join(__dirname, "../frontend/pages")));
+app.use("/components", express.static(path.join(__dirname, "../frontend/components")));
+app.use("/scripts", express.static(path.join(__dirname, "../frontend/scripts")));
+app.use("/styles", express.static(path.join(__dirname, "../frontend/styles")));
+
 app.get("/", (req, res) => {
+  if (req.accepts("html") && !req.xhr && !req.headers["accept"]?.includes("application/json")) {
+    return res.sendFile(path.join(__dirname, "../index.html"));
+  }
   res.json({
     success: true,
     message: "StudyReader backend is running.",
@@ -853,9 +833,9 @@ async function getDocumentLocalPath(document) {
     }
   }
 
-  // 2. Fetch from Firebase Cloud Storage
+  // 2. Fetch from Cloud Storage (Supabase / R2 / Fallback)
   if (document.storage_path) {
-    const tempPath = await firebaseStorage.downloadToTemp(document.storage_path);
+    const tempPath = await cloudStorage.downloadToTemp(document.storage_path);
     return { filePath: tempPath, isTemp: true };
   }
 
@@ -1099,9 +1079,9 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
     moveFile(req.file.path, finalFilePath);
     fileMovedToPublicDirectory = true;
 
-    // Upload to Firebase Cloud Storage
+    // Upload to Cloud Storage (Supabase Storage active)
     const cloudStoragePath = `documents/${userId}/${Date.now()}_${req.file.filename}`;
-    const cloudUpload = await firebaseStorage.uploadFile(
+    const cloudUpload = await cloudStorage.uploadFile(
       finalFilePath,
       cloudStoragePath,
       {
@@ -1194,6 +1174,18 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         fileSize: pdf.file_size,
         category: pdf.category
       });
+
+      // In serverless environments, attempt immediate processing within bounded budget
+      if (process.env.VERCEL || req.query.processNow === "true") {
+        try {
+          await Promise.race([
+            jobProcessor.processOne(),
+            new Promise((resolve) => setTimeout(() => resolve(false), 8000))
+          ]);
+        } catch (procErr) {
+          console.log("[Upload] Inline processing deferred to queue:", procErr.message);
+        }
+      }
     } catch (jobErr) {
       console.warn("Could not enqueue document processing job:", jobErr.message);
     }
@@ -1334,9 +1326,9 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
       publicFilePath
     );
 
-    // Upload to Firebase Cloud Storage
+    // Upload to Cloud Storage (Supabase Storage active)
     const cloudStoragePath = `documents/${userId}/${Date.now()}_${pendingUpload.filename}`;
-    const cloudUpload = await firebaseStorage.uploadFile(
+    const cloudUpload = await cloudStorage.uploadFile(
       publicFilePath,
       cloudStoragePath,
       {
@@ -1426,7 +1418,7 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
         pendingUpload.filePath
       );
       if (cloudUpload?.storagePath) {
-        try { await firebaseStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
+        try { await cloudStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
       }
       throw error;
     }
@@ -1442,6 +1434,18 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
         fileSize: pdf.file_size,
         category: pdf.category
       });
+
+      // In serverless environments, attempt immediate processing within bounded budget
+      if (process.env.VERCEL || req.query.processNow === "true") {
+        try {
+          await Promise.race([
+            jobProcessor.processOne(),
+            new Promise((resolve) => setTimeout(() => resolve(false), 8000))
+          ]);
+        } catch (procErr) {
+          console.log("[Upload] Inline processing deferred to queue:", procErr.message);
+        }
+      }
     } catch (jobErr) {
       console.warn("Could not enqueue document processing job:", jobErr.message);
     }
@@ -1546,9 +1550,9 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
       publicFilePath
     );
 
-    // Upload new file to Firebase Cloud Storage
+    // Upload new file to Cloud Storage (Supabase Storage active)
     const cloudStoragePath = `documents/${userId}/${Date.now()}_${pendingUpload.filename}`;
-    const cloudUpload = await firebaseStorage.uploadFile(
+    const cloudUpload = await cloudStorage.uploadFile(
       publicFilePath,
       cloudStoragePath,
       {
@@ -1629,7 +1633,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         pendingUpload.filePath
       );
       if (cloudUpload?.storagePath) {
-        try { await firebaseStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
+        try { await cloudStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
       }
       throw error;
     }
@@ -1637,7 +1641,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
     // Delete old cloud storage object if one existed
     if (oldStoragePath) {
       try {
-        await firebaseStorage.deleteFile(oldStoragePath);
+        await cloudStorage.deleteFile(oldStoragePath);
       } catch (cloudErr) {
         console.warn("Could not remove replaced cloud storage object:", cloudErr.message);
       }
@@ -1824,7 +1828,7 @@ app.get("/api/pdfs/secure-download", async (req, res) => {
       });
     }
 
-    const isValid = firebaseStorage.verifySignedToken(storagePath, expires, token);
+    const isValid = cloudStorage.verifySignedToken(storagePath, expires, token);
     if (!isValid) {
       return res.status(403).json({
         success: false,
@@ -1832,7 +1836,7 @@ app.get("/api/pdfs/secure-download", async (req, res) => {
       });
     }
 
-    const exists = await firebaseStorage.fileExists(storagePath);
+    const exists = await cloudStorage.fileExists(storagePath);
     if (!exists) {
       return res.status(404).json({
         success: false,
@@ -1844,7 +1848,7 @@ app.get("/api/pdfs/secure-download", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
     res.setHeader("Content-Type", "application/octet-stream");
 
-    const stream = firebaseStorage.getFileStream(storagePath);
+    const stream = cloudStorage.getFileStream(storagePath);
     return stream.pipe(res);
 
   } catch (error) {
@@ -1958,11 +1962,11 @@ app.get("/api/pdfs/:id/file", requireAuth, async (req, res) => {
       res.setHeader("Content-Length", document.file_size);
     }
 
-    // 1. Try Firebase Cloud Storage stream if storage_path is recorded
+    // 1. Try Cloud Storage stream if storage_path is recorded
     if (document.storage_path) {
-      const existsInCloud = await firebaseStorage.fileExists(document.storage_path);
+      const existsInCloud = await cloudStorage.fileExists(document.storage_path);
       if (existsInCloud) {
-        const stream = firebaseStorage.getFileStream(document.storage_path);
+        const stream = cloudStorage.getFileStream(document.storage_path);
         stream.on("error", (err) => {
           console.error("Cloud storage stream error:", err);
           if (!res.headersSent) {
@@ -2015,7 +2019,7 @@ app.get("/api/pdfs/:id/signed-url", requireAuth, async (req, res) => {
     }
 
     const storagePath = document.storage_path || `documents/${document.user_id}/${document.filename}`;
-    const signedUrl = await firebaseStorage.getSignedUrl(storagePath, {
+    const signedUrl = await cloudStorage.getSignedUrl(storagePath, {
       expiresInMinutes: 15,
       filename: document.original_filename || document.filename
     });
@@ -2189,6 +2193,18 @@ app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
 
     const job = await jobProcessor.enqueueJob(pdfId, "process_document");
 
+    // In serverless environments (or when requested), attempt immediate processing within bounded budget
+    if (req.query.processNow === "true" || process.env.VERCEL) {
+      try {
+        await Promise.race([
+          jobProcessor.processOne(),
+          new Promise((resolve) => setTimeout(() => resolve(false), 7000))
+        ]);
+      } catch (procErr) {
+        console.log("[Finalize] Inline processing deferred to queue:", procErr.message);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: "Document upload finalized and enqueued for processing.",
@@ -2208,22 +2224,29 @@ app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
 
 app.post("/api/jobs/process-batch", async (req, res) => {
   try {
-    const cronSecret = process.env.CRON_SECRET;
+    const cronSecret = process.env.CRON_SECRET || process.env.JOB_SECRET;
     const authHeader = req.headers.authorization;
-    const isCronAuthorized = cronSecret && authHeader === `Bearer ${cronSecret}`;
+    const headerSecret = req.headers["x-cron-secret"];
+    const isCronAuthorized = cronSecret && (
+      authHeader === `Bearer ${cronSecret}` || 
+      headerSecret === cronSecret
+    );
     const isUserAuthorized = req.session && req.session.userId;
 
     if (!isCronAuthorized && !isUserAuthorized) {
       return res.status(401).json({ success: false, message: "Unauthorized job trigger." });
     }
 
-    const limit = Math.min(Number(req.query.limit) || 3, 10);
-    const processed = await jobProcessor.processBatch(limit);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 2, 1), 5);
+    const timeBudgetMs = Math.min(Math.max(Number(req.query.timeBudgetMs) || 8000, 2000), 55000);
+    const result = await jobProcessor.processBatch(limit, timeBudgetMs);
 
     return res.status(200).json({
       success: true,
-      processedCount: processed,
-      message: `Processed ${processed} job(s).`
+      processedCount: result.processed,
+      recoveredCount: result.recovered,
+      elapsedMs: result.elapsedMs,
+      message: `Processed ${result.processed} job(s), recovered ${result.recovered} stale lock(s).`
     });
   } catch (err) {
     console.error("Process batch error:", err);
@@ -3146,10 +3169,10 @@ app.delete("/api/pdfs/:id", requireAuth, async (req, res) => {
       [pdfId]
     );
 
-    // Delete from Firebase Cloud Storage
+    // Delete from Cloud Storage (Supabase / R2)
     if (storagePath) {
       try {
-        await firebaseStorage.deleteFile(storagePath);
+        await cloudStorage.deleteFile(storagePath);
       } catch (cloudErr) {
         console.warn("Could not delete cloud storage object:", cloudErr.message);
       }
@@ -4328,7 +4351,9 @@ async function startServer() {
   } catch (error) {
     console.error("Failed to connect to PostgreSQL.", error);
 
-    process.exit(1);
+    if (!process.env.VERCEL) {
+      process.exit(1);
+    }
   }
 }
 

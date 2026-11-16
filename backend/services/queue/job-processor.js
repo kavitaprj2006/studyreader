@@ -74,9 +74,78 @@ class JobProcessor {
   }
 
   /**
-   * Enqueues a new background document processing job.
+   * Recovers stale locks from dead workers or timed-out serverless executions.
+   */
+  async recoverStaleLocks(timeoutMinutes = 5) {
+    let recoveredCount = 0;
+    try {
+      // 1. Re-queue processing jobs where worker died and attempts < max_attempts
+      const recoverRes = await this.pool.query(
+        `UPDATE document_jobs
+         SET status = 'pending',
+             locked_at = NULL,
+             locked_by = NULL,
+             error_message = COALESCE(error_message || ' | ', '') || 'Stale lock recovered after timeout',
+             updated_at = NOW()
+         WHERE status = 'processing'
+           AND locked_at < NOW() - ($1 * INTERVAL '1 minute')
+           AND attempts < max_attempts
+         RETURNING id`,
+        [timeoutMinutes]
+      );
+      recoveredCount += recoverRes.rows.length;
+
+      // 2. Mark permanently failed jobs that exceeded max_attempts
+      const failRes = await this.pool.query(
+        `UPDATE document_jobs
+         SET status = 'failed',
+             locked_at = NULL,
+             locked_by = NULL,
+             error_message = COALESCE(error_message || ' | ', '') || 'Terminated after exceeding max attempts / stale lock',
+             updated_at = NOW()
+         WHERE status = 'processing'
+           AND locked_at < NOW() - ($1 * INTERVAL '1 minute')
+           AND attempts >= max_attempts
+         RETURNING id`,
+        [timeoutMinutes]
+      );
+
+      if (failRes.rows.length > 0) {
+        for (const r of failRes.rows) {
+          await this.pool.query(
+            `UPDATE pdfs SET processing_status = 'failed', processing_error = 'Processing timeout exceeded max retries', updated_at = NOW() WHERE id = (SELECT pdf_id FROM document_jobs WHERE id = $1)`,
+            [r.id]
+          );
+        }
+      }
+
+      if (recoveredCount > 0 || failRes.rows.length > 0) {
+        console.log(`[JobProcessor] Stale lock recovery: ${recoveredCount} requeued, ${failRes.rows.length} permanently failed.`);
+      }
+    } catch (err) {
+      console.warn(`[JobProcessor] Error in recoverStaleLocks:`, err.message);
+    }
+    return recoveredCount;
+  }
+
+  /**
+   * Enqueues a new background document processing job idempotently.
    */
   async enqueueJob(pdfId, jobType = "process_document") {
+    // Check if there is already an active (pending or processing) job for this document
+    const existing = await this.pool.query(
+      `SELECT id, pdf_id, job_type, status, progress, created_at
+       FROM document_jobs
+       WHERE pdf_id = $1 AND status IN ('pending', 'processing')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [pdfId]
+    );
+
+    if (existing.rows.length > 0) {
+      return existing.rows[0];
+    }
+
     const res = await this.pool.query(
       `INSERT INTO document_jobs (pdf_id, job_type, status, progress, attempts, max_attempts)
        VALUES ($1, $2, 'pending', 0, 0, 3)
@@ -310,16 +379,34 @@ class JobProcessor {
   }
 
   /**
-   * Processes up to limit jobs in batch.
+   * Processes up to limit jobs in batch, respecting a maximum execution time budget.
+   * Crucial for serverless environments (Vercel) to avoid timing out mid-job.
    */
-  async processBatch(limit = 5) {
+  async processBatch(limit = 3, timeBudgetMs = 8000) {
+    const startTime = Date.now();
     let processed = 0;
+
+    // First, recover any stale locks from previous interrupted executions
+    const recovered = await this.recoverStaleLocks(5);
+
     for (let i = 0; i < limit; i++) {
+      // Check remaining execution time budget before claiming another job
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= timeBudgetMs) {
+        console.log(`[JobProcessor] Reached time budget (${elapsed}ms >= ${timeBudgetMs}ms). Halting batch.`);
+        break;
+      }
+
       const hasJob = await this.processOne();
       if (!hasJob) break;
       processed++;
     }
-    return processed;
+
+    return {
+      processed,
+      recovered,
+      elapsedMs: Date.now() - startTime
+    };
   }
 
   /**

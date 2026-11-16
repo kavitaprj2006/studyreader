@@ -38,6 +38,7 @@ ADD COLUMN IF NOT EXISTS metadata JSONB NULL DEFAULT '{}'::jsonb;
 DO $$
 DECLARE
     v_available BOOLEAN := FALSE;
+    col_type TEXT;
 BEGIN
     -- Check if pgvector extension is installable
     SELECT EXISTS (
@@ -54,23 +55,44 @@ BEGIN
         END;
     END IF;
 
+    -- Inspect current embedding column type on pdf_chunks
+    SELECT data_type INTO col_type
+    FROM information_schema.columns 
+    WHERE table_name = 'pdf_chunks' AND column_name = 'embedding';
+
     -- If extension exists and type vector is registered
     IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'pdf_chunks' AND column_name = 'embedding'
-        ) THEN
+        IF col_type IS NULL THEN
             ALTER TABLE pdf_chunks ADD COLUMN embedding vector(768) NULL;
             RAISE NOTICE 'Added embedding vector(768) to pdf_chunks';
+        ELSIF col_type = 'ARRAY' THEN
+            -- Convert double precision[] to vector(768) while preserving all existing values
+            ALTER TABLE pdf_chunks ALTER COLUMN embedding TYPE vector(768) 
+            USING (replace(replace(embedding::text, '{', '['), '}', ']'))::vector;
+            RAISE NOTICE 'Safely converted existing embedding ARRAY to vector(768) on pdf_chunks';
         END IF;
+
+        -- Create vector cosine distance index if possible
+        BEGIN
+            EXECUTE 'CREATE INDEX IF NOT EXISTS idx_pdf_chunks_embedding_cosine ON pdf_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);';
+        EXCEPTION WHEN OTHERS THEN
+            -- In empty tables or without enough samples, IVFFlat creation can be deferred
+            NULL;
+        END;
     ELSE
         -- Fallback for environments without pgvector (e.g. local PostgreSQL without binary extension):
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'pdf_chunks' AND column_name = 'embedding'
-        ) THEN
+        IF col_type IS NULL THEN
             ALTER TABLE pdf_chunks ADD COLUMN embedding double precision[] NULL;
             RAISE NOTICE 'Added embedding double precision[] fallback to pdf_chunks';
+        END IF;
+
+        -- Enforce 768 dimensions for fallback arrays
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'chk_pdf_chunks_embedding_dim'
+        ) THEN
+            ALTER TABLE pdf_chunks 
+            ADD CONSTRAINT chk_pdf_chunks_embedding_dim 
+            CHECK (embedding IS NULL OR array_length(embedding, 1) = 768);
         END IF;
     END IF;
 END $$;
@@ -95,3 +117,12 @@ ON analytics_events (event_name, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_analytics_user_time
 ON analytics_events (user_id, created_at DESC);
+
+-- 5. Ensure migration history is tracked
+CREATE TABLE IF NOT EXISTS migration_history (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO migration_history (name) VALUES ('004_job_queue_and_pgvector') ON CONFLICT (name) DO NOTHING;
+

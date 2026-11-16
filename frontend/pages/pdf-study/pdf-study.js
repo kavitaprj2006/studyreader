@@ -662,6 +662,9 @@ async function loadSelectedPDF() {
 
     currentDocumentType = selectedDocumentData.fileType || "pdf";
 
+    // Pre-load conversational chat history concurrently
+    loadChatHistory();
+
     if (currentDocumentType === "pdf") {
       await loadPDFDocument(selectedDocumentData.fileUrl);
     } else if (currentDocumentType === "docx" || currentDocumentType === "pptx") {
@@ -669,9 +672,6 @@ async function loadSelectedPDF() {
     } else {
       throw new Error(`Unsupported document format: ${currentDocumentType}`);
     }
-
-    // Pre-load conversational chat history in background
-    loadChatHistory();
 
   } catch (error) {
     console.error("Failed to load document:", error);
@@ -1062,7 +1062,7 @@ async function sendChatMessage(promptText) {
 
   // Append thinking bubble
   const thinkingBubble = document.createElement("div");
-  thinkingBubble.className = "chat-bubble assistant";
+  thinkingBubble.className = "chat-bubble assistant chat-thinking-bubble";
   thinkingBubble.innerHTML = `
     <div style="display: flex; align-items: center; gap: 8px; color: #6366f1; font-style: italic;">
       <span>🧠</span>
