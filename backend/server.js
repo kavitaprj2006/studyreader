@@ -77,7 +77,9 @@ const PORT = process.env.PORT || 3000;
 // PDF UPLOAD CONFIGURATION
 // ============================================================
 
-const uploadDir = path.join(__dirname, "uploads");
+const uploadDir = process.env.VERCEL
+  ? path.join(os.tmpdir(), "studyreader-uploads")
+  : path.join(__dirname, "uploads");
 const uploadStagingDir =
   path.join(os.tmpdir(), "studyreader-pending-uploads");
 
