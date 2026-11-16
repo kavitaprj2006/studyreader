@@ -16,9 +16,11 @@ backend/.env.*
 firebase-admin-key*.json
 firebase-key*.json
 
-# User Uploaded Documents (Ephemeral local uploads)
+# User Uploaded Documents (Ephemeral local uploads & private bucket)
 backend/uploads/*
 !backend/uploads/.gitkeep
+backend/storage_bucket/**
+!backend/storage_bucket/.gitkeep
 
 # System & OS Files
 .DS_Store
@@ -36,3 +38,7 @@ pnpm-debug.log*
 dist/
 build/
 .cache/
+
+# Database Backups
+database/backups/*
+!database/backups/.gitkeep

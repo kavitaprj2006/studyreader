@@ -4,6 +4,10 @@
   "trailingSlash": false,
   "routes": [
     {
+      "src": "^/api/(.*)$",
+      "dest": "/api/index.js"
+    },
+    {
       "src": "^/$",
       "status": 307,
       "headers": { "Location": "/frontend/pages/login/index.html" }

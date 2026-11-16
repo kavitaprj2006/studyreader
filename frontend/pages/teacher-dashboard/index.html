@@ -391,9 +391,14 @@
   <dialog id="modal-roster" class="sr-modal" style="max-width: 600px;">
     <div class="modal-box">
       <div class="modal-head">
-        <div>
-          <h3 id="roster-class-name">Enrolled Students</h3>
-          <span id="roster-class-code" style="font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);"></span>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <div>
+            <h3 id="roster-class-name">Enrolled Students</h3>
+            <span id="roster-class-code" style="font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);"></span>
+          </div>
+          <button type="button" id="btn-renew-code" class="btn-sm secondary-button" style="font-size: 11px; padding: 4px 8px; margin-left: auto;" title="Generate a new classroom join code">
+            <span>🔄 Renew Code</span>
+          </button>
         </div>
         <button type="button" class="modal-close-btn" data-close-modal="modal-roster">&times;</button>
       </div>
@@ -401,12 +406,13 @@
         <div id="roster-empty" class="empty-state" style="padding: 20px 0; display: none;">
           <p>No students have joined this classroom yet. Share the code to invite students!</p>
         </div>
-        <table id="roster-table" class="roster-table" style="display: none;">
+        <table id="roster-table" class="roster-table" style="display: none; width: 100%;">
           <thead>
             <tr>
               <th>Student Name</th>
               <th>Email</th>
               <th>Joined Date</th>
+              <th style="text-align: right;">Action</th>
             </tr>
           </thead>
           <tbody id="roster-students-list"></tbody>

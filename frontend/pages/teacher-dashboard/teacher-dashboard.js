@@ -531,8 +531,64 @@ async function openRosterModal(classroomId, className, classCode) {
           <td><strong>${escapeHTML(s.name)}</strong></td>
           <td style="color: var(--text-secondary);">${escapeHTML(s.email)}</td>
           <td style="color: var(--text-light);">${formatDate(s.joinedAt)}</td>
+          <td style="text-align: right;">
+            <button type="button" class="btn-remove-student" data-student-id="${s.id}" data-student-name="${escapeHTML(s.name)}" style="color: #dc2626; border: 1px solid #fecaca; background: #fff; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;">
+              Remove
+            </button>
+          </td>
         </tr>
       `).join("");
+
+      tbody.querySelectorAll(".btn-remove-student").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const studentId = btn.getAttribute("data-student-id");
+          const studentName = btn.getAttribute("data-student-name");
+          if (!confirm(`Are you sure you want to remove ${studentName} from this classroom?`)) return;
+
+          try {
+            btn.disabled = true;
+            btn.textContent = "...";
+            const delRes = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(studentId)}`, {
+              method: "DELETE",
+              credentials: "include"
+            });
+            const delData = await delRes.json();
+            if (!delRes.ok) throw new Error(delData.message || "Failed to remove student.");
+            showToast(`${studentName} removed from classroom.`);
+            await openRosterModal(classroomId, className, classCode);
+            await loadClassrooms();
+          } catch (removeErr) {
+            alert(removeErr.message);
+            btn.disabled = false;
+            btn.textContent = "Remove";
+          }
+        });
+      });
+    }
+
+    const renewBtn = document.getElementById("btn-renew-code");
+    if (renewBtn) {
+      renewBtn.onclick = async () => {
+        if (!confirm("Renewing the join code will invalidate the old code. Proceed?")) return;
+        try {
+          renewBtn.disabled = true;
+          renewBtn.textContent = "Renewing...";
+          const renewRes = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(classroomId)}/renew-code`, {
+            method: "POST",
+            credentials: "include"
+          });
+          const renewData = await renewRes.json();
+          if (!renewRes.ok) throw new Error(renewData.message || "Failed to renew code.");
+          showToast(`New code generated: ${renewData.code}`);
+          if (codeEl) codeEl.textContent = `Classroom Code: ${renewData.code}`;
+          await loadClassrooms();
+        } catch (renewErr) {
+          alert(renewErr.message);
+        } finally {
+          renewBtn.disabled = false;
+          renewBtn.textContent = "🔄 Renew Code";
+        }
+      };
     }
 
   } catch (err) {
@@ -540,7 +596,7 @@ async function openRosterModal(classroomId, className, classCode) {
     if (rosterEmpty) rosterEmpty.style.display = "none";
     if (rosterTable) rosterTable.style.display = "table";
     if (tbody) {
-      tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load roster: ${escapeHTML(err.message)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #dc2626; padding: 24px;">Failed to load roster: ${escapeHTML(err.message)}</td></tr>`;
     }
   }
 }

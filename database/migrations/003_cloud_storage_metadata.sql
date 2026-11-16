@@ -1,0 +1,11 @@
+-- ============================================================
+-- Migration 003: Cloud Storage Provider & Metadata References
+-- ============================================================
+
+ALTER TABLE pdfs ADD COLUMN IF NOT EXISTS storage_provider VARCHAR(30) NOT NULL DEFAULT 'local';
+ALTER TABLE pdfs ADD COLUMN IF NOT EXISTS storage_path VARCHAR(500) NULL;
+ALTER TABLE pdfs ADD COLUMN IF NOT EXISTS mime_type VARCHAR(100) NULL;
+ALTER TABLE pdfs ADD COLUMN IF NOT EXISTS md5_hash VARCHAR(64) NULL;
+
+CREATE INDEX IF NOT EXISTS idx_pdfs_storage_provider ON pdfs (storage_provider);
+CREATE INDEX IF NOT EXISTS idx_pdfs_storage_path ON pdfs (storage_path);

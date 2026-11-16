@@ -1,4 +1,5 @@
 const path = require("path");
+const crypto = require("crypto");
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 
 const express = require("express");
@@ -15,6 +16,13 @@ const piperTtsProvider =
   require("./services/tts/piper-tts-provider");
 const ragService =
   require("./services/ai/rag-service");
+const cloudStorage =
+  require("./services/storage/cloud-storage");
+const firebaseStorage = cloudStorage; // Unified cloud storage (R2 + Firebase fallback)
+const JobProcessor =
+  require("./services/queue/job-processor");
+const embeddingService =
+  require("./services/ai/embedding-service");
 
 const app = express();
 
@@ -75,8 +83,13 @@ const uploadStagingDir =
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(uploadStagingDir, { recursive: true });
-
-app.use("/uploads", express.static(uploadDir));
+// Public unauthenticated access through /uploads is disabled for cloud security
+app.use("/uploads", (req, res) => {
+  return res.status(401).json({
+    success: false,
+    message: "Direct unauthenticated access to /uploads is disabled. Documents must be accessed through authenticated API endpoints."
+  });
+});
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -156,6 +169,20 @@ const pool = new Pool(poolConfig);
 pool.on("error", (err) => {
   console.error("Unexpected PostgreSQL pool error:", err);
 });
+
+// Initialize Background Job Processor
+const jobProcessor = new JobProcessor(pool);
+
+// Analytics event logger helper
+async function logAnalyticsEvent(userId, eventName, entityType = null, entityId = null, metadata = {}) {
+  try {
+    await pool.query(
+      `INSERT INTO analytics_events (user_id, event_name, entity_type, entity_id, metadata)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId || null, eventName, entityType, entityId, JSON.stringify(metadata)]
+    );
+  } catch (_) {}
+}
 
 // ============================================================
 // Middleware
@@ -241,7 +268,7 @@ app.get("/api/session-test", (req, res) => {
 // AUTHENTICATION — SIGNUP
 // ===============================
 
-app.post("/api/auth/signup", async (req, res) => {
+app.post(["/api/auth/signup", "/api/auth/register"], async (req, res) => {
   try {
     const { name, email, password, role = "student" } = req.body;
 
@@ -813,6 +840,28 @@ function countWords(text) {
     .length;
 }
 
+async function getDocumentLocalPath(document) {
+  if (!document) {
+    throw new Error("Document object is required.");
+  }
+
+  // 1. Check if cached locally in uploadDir
+  if (document.filename && isSafeUploadFilename(document.filename)) {
+    const localPath = path.resolve(uploadDir, document.filename);
+    if (path.dirname(localPath) === path.resolve(uploadDir) && fs.existsSync(localPath)) {
+      return { filePath: localPath, isTemp: false };
+    }
+  }
+
+  // 2. Fetch from Firebase Cloud Storage
+  if (document.storage_path) {
+    const tempPath = await firebaseStorage.downloadToTemp(document.storage_path);
+    return { filePath: tempPath, isTemp: true };
+  }
+
+  throw new Error(`Document file not found: ${document.original_filename || document.filename}`);
+}
+
 function moveFile(source, destination) {
   if (fs.existsSync(destination)) {
     throw new Error("A file with the generated upload name already exists.");
@@ -1050,7 +1099,21 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
     moveFile(req.file.path, finalFilePath);
     fileMovedToPublicDirectory = true;
 
-    const result = await pool.query(
+    // Upload to Firebase Cloud Storage
+    const cloudStoragePath = `documents/${userId}/${Date.now()}_${req.file.filename}`;
+    const cloudUpload = await firebaseStorage.uploadFile(
+      finalFilePath,
+      cloudStoragePath,
+      {
+        originalFilename,
+        userId,
+        classroomId,
+        subjectId,
+        category
+      }
+    );
+
+    const insertResult = await pool.query(
       `
       INSERT INTO pdfs
         (
@@ -1065,10 +1128,40 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
           category,
           academic_year,
           semester,
-          access_scope
+          access_scope,
+          storage_provider,
+          storage_path,
+          mime_type,
+          md5_hash
         )
       VALUES
-        ($1, $2, $3, $4, $5, 'uploaded', $6, $7, $8, $9, $10, $11)
+        ($1, $2, $3, 'pending', $4, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      RETURNING id
+      `,
+      [
+        userId,
+        req.file.filename,
+        req.file.originalname,
+        req.file.size,
+        classroomId ? Number(classroomId) : null,
+        subjectId ? Number(subjectId) : null,
+        category,
+        academicYear,
+        semester,
+        accessScope,
+        cloudUpload.storageProvider,
+        cloudUpload.storagePath,
+        cloudUpload.mimeType,
+        cloudUpload.md5Hash
+      ]
+    );
+
+    const newDocId = insertResult.rows[0].id;
+    const result = await pool.query(
+      `
+      UPDATE pdfs
+      SET file_url = $1
+      WHERE id = $2
       RETURNING
         id,
         filename,
@@ -1083,25 +1176,27 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         academic_year,
         semester,
         access_scope,
+        storage_provider,
+        storage_path,
         created_at
       `,
-      [
-        userId,
-        req.file.filename,
-        req.file.originalname,
-        `/uploads/${req.file.filename}`,
-        req.file.size,
-        classroomId ? Number(classroomId) : null,
-        subjectId ? Number(subjectId) : null,
-        category,
-        academicYear,
-        semester,
-        accessScope
-      ]
+      [`/api/pdfs/${newDocId}/file`, newDocId]
     );
 
     const pdf = result.rows[0];
     fileSavedInDatabase = true;
+
+    // Enqueue durable background processing job
+    try {
+      await jobProcessor.enqueueJob(pdf.id, "process_document");
+      await logAnalyticsEvent(userId, "document_uploaded", "pdfs", pdf.id, {
+        filename: pdf.original_filename,
+        fileSize: pdf.file_size,
+        category: pdf.category
+      });
+    } catch (jobErr) {
+      console.warn("Could not enqueue document processing job:", jobErr.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -1122,6 +1217,8 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         academicYear: pdf.academic_year,
         semester: pdf.semester,
         accessScope: pdf.access_scope,
+        storageProvider: pdf.storage_provider,
+        storagePath: pdf.storage_path,
         createdAt: pdf.created_at
       }
     });
@@ -1237,10 +1334,24 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
       publicFilePath
     );
 
+    // Upload to Firebase Cloud Storage
+    const cloudStoragePath = `documents/${userId}/${Date.now()}_${pendingUpload.filename}`;
+    const cloudUpload = await firebaseStorage.uploadFile(
+      publicFilePath,
+      cloudStoragePath,
+      {
+        originalFilename: pendingUpload.originalFilename,
+        userId,
+        classroomId: pendingUpload.classroomId,
+        subjectId: pendingUpload.subjectId,
+        category: pendingUpload.category
+      }
+    );
+
     let result;
 
     try {
-      result = await pool.query(
+      const insertResult = await pool.query(
         `
       INSERT INTO pdfs
         (
@@ -1255,50 +1366,85 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
           category,
           academic_year,
           semester,
-          access_scope
+          access_scope,
+          storage_provider,
+          storage_path,
+          mime_type,
+          md5_hash
         )
       VALUES
-        ($1, $2, $3, $4, $5, 'uploaded', $6, $7, $8, $9, $10, $11)
-      RETURNING
-        id,
-        filename,
-        original_filename,
-        file_url,
-        file_size,
-        page_count,
-        processing_status,
-        classroom_id,
-        subject_id,
-        category,
-        academic_year,
-        semester,
-        access_scope,
-        created_at
+        ($1, $2, $3, 'pending', $4, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      RETURNING id
       `,
         [
           userId,
           pendingUpload.filename,
           pendingUpload.originalFilename,
-          `/uploads/${pendingUpload.filename}`,
           pendingUpload.fileSize,
           pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
           pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
           pendingUpload.category || 'resource',
           pendingUpload.academicYear || null,
           pendingUpload.semester || null,
-          pendingUpload.accessScope || (pendingUpload.classroomId ? 'classroom' : 'private')
+          pendingUpload.accessScope || (pendingUpload.classroomId ? 'classroom' : 'private'),
+          cloudUpload.storageProvider,
+          cloudUpload.storagePath,
+          cloudUpload.mimeType,
+          cloudUpload.md5Hash
         ]
+      );
+
+      const newDocId = insertResult.rows[0].id;
+      result = await pool.query(
+        `
+        UPDATE pdfs
+        SET file_url = $1
+        WHERE id = $2
+        RETURNING
+          id,
+          filename,
+          original_filename,
+          file_url,
+          file_size,
+          page_count,
+          processing_status,
+          classroom_id,
+          subject_id,
+          category,
+          academic_year,
+          semester,
+          access_scope,
+          storage_provider,
+          storage_path,
+          created_at
+        `,
+        [`/api/pdfs/${newDocId}/file`, newDocId]
       );
     } catch (error) {
       moveFile(
         publicFilePath,
         pendingUpload.filePath
       );
+      if (cloudUpload?.storagePath) {
+        try { await firebaseStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
+      }
       throw error;
     }
 
     const pdf = result.rows[0];
     clearPendingUpload(req, filename);
+
+    // Enqueue durable background processing job
+    try {
+      await jobProcessor.enqueueJob(pdf.id, "process_document");
+      await logAnalyticsEvent(userId, "document_uploaded", "pdfs", pdf.id, {
+        filename: pdf.original_filename,
+        fileSize: pdf.file_size,
+        category: pdf.category
+      });
+    } catch (jobErr) {
+      console.warn("Could not enqueue document processing job:", jobErr.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -1315,6 +1461,8 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
         classroomId: pdf.classroom_id,
         subjectId: pdf.subject_id,
         category: pdf.category,
+        storageProvider: pdf.storage_provider,
+        storagePath: pdf.storage_path,
         createdAt: pdf.created_at
       }
     });
@@ -1370,7 +1518,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
     // Verify that the existing PDF belongs to this user.
     const existingResult = await pool.query(
       `
-      SELECT filename
+      SELECT filename, storage_path
       FROM pdfs
       WHERE id = $1
         AND user_id = $2
@@ -1387,6 +1535,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
     }
 
     const oldFilename = existingResult.rows[0].filename;
+    const oldStoragePath = existingResult.rows[0].storage_path;
     const oldFilePath = path.join(uploadDir, oldFilename);
 
     const publicFilePath =
@@ -1395,6 +1544,20 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
     moveFile(
       pendingUpload.filePath,
       publicFilePath
+    );
+
+    // Upload new file to Firebase Cloud Storage
+    const cloudStoragePath = `documents/${userId}/${Date.now()}_${pendingUpload.filename}`;
+    const cloudUpload = await firebaseStorage.uploadFile(
+      publicFilePath,
+      cloudStoragePath,
+      {
+        originalFilename: pendingUpload.originalFilename,
+        userId,
+        classroomId: pendingUpload.classroomId,
+        subjectId: pendingUpload.subjectId,
+        category: pendingUpload.category
+      }
     );
 
     let result;
@@ -1415,10 +1578,14 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         academic_year = $8,
         semester = $9,
         access_scope = $10,
+        storage_provider = $11,
+        storage_path = $12,
+        mime_type = $13,
+        md5_hash = $14,
         page_count = NULL,
         processing_error = NULL
-      WHERE id = $11
-        AND user_id = $12
+      WHERE id = $15
+        AND user_id = $16
       RETURNING
         id,
         filename,
@@ -1433,12 +1600,14 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         academic_year,
         semester,
         access_scope,
+        storage_provider,
+        storage_path,
         created_at
       `,
         [
           pendingUpload.filename,
           pendingUpload.originalFilename,
-          `/uploads/${pendingUpload.filename}`,
+          `/api/pdfs/${existingPdfId}/file`,
           pendingUpload.fileSize,
           pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
           pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
@@ -1446,6 +1615,10 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
           pendingUpload.academicYear || null,
           pendingUpload.semester || null,
           pendingUpload.accessScope || (pendingUpload.classroomId ? 'classroom' : 'private'),
+          cloudUpload.storageProvider,
+          cloudUpload.storagePath,
+          cloudUpload.mimeType,
+          cloudUpload.md5Hash,
           existingPdfId,
           userId
         ]
@@ -1455,7 +1628,19 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         publicFilePath,
         pendingUpload.filePath
       );
+      if (cloudUpload?.storagePath) {
+        try { await firebaseStorage.deleteFile(cloudUpload.storagePath); } catch (_) {}
+      }
       throw error;
+    }
+
+    // Delete old cloud storage object if one existed
+    if (oldStoragePath) {
+      try {
+        await firebaseStorage.deleteFile(oldStoragePath);
+      } catch (cloudErr) {
+        console.warn("Could not remove replaced cloud storage object:", cloudErr.message);
+      }
     }
 
     // Delete old physical file after database replacement.
@@ -1474,6 +1659,17 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
     const pdf = result.rows[0];
     clearPendingUpload(req, filename);
 
+    // Enqueue durable background processing job for replaced document
+    try {
+      await jobProcessor.enqueueJob(pdf.id, "process_document");
+      await logAnalyticsEvent(userId, "document_replaced", "pdfs", pdf.id, {
+        filename: pdf.original_filename,
+        fileSize: pdf.file_size
+      });
+    } catch (jobErr) {
+      console.warn("Could not enqueue document processing job:", jobErr.message);
+    }
+
     return res.status(200).json({
       success: true,
       message: "Existing PDF replaced successfully.",
@@ -1489,6 +1685,8 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         classroomId: pdf.classroom_id,
         subjectId: pdf.subject_id,
         category: pdf.category,
+        storageProvider: pdf.storage_provider,
+        storagePath: pdf.storage_path,
         createdAt: pdf.created_at
       }
     });
@@ -1611,6 +1809,54 @@ app.get("/api/pdfs", requireAuth, async (req, res) => {
 });
 
 // ============================================================
+// SIGNED SHORT-LIVED URL SECURE DOWNLOAD GATEWAY
+// (Must be defined before /api/pdfs/:id for Express routing precedence)
+// ============================================================
+
+app.get("/api/pdfs/secure-download", async (req, res) => {
+  try {
+    const { token, path: storagePath, expires } = req.query;
+
+    if (!token || !storagePath || !expires) {
+      return res.status(400).json({
+        success: false,
+        message: "Download token, expiry, and storage path are required."
+      });
+    }
+
+    const isValid = firebaseStorage.verifySignedToken(storagePath, expires, token);
+    if (!isValid) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid or expired download token."
+      });
+    }
+
+    const exists = await firebaseStorage.fileExists(storagePath);
+    if (!exists) {
+      return res.status(404).json({
+        success: false,
+        message: "File not found in storage bucket."
+      });
+    }
+
+    const filename = path.basename(storagePath);
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader("Content-Type", "application/octet-stream");
+
+    const stream = firebaseStorage.getFileStream(storagePath);
+    return stream.pipe(res);
+
+  } catch (error) {
+    console.error("Secure download error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Secure download failed."
+    });
+  }
+});
+
+// ============================================================
 // GET SINGLE PDF BY ID
 // ============================================================
 
@@ -1657,6 +1903,8 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
         subjectId: document.subject_id ? Number(document.subject_id) : null,
         subjectName: subjectName,
         accessScope: document.access_scope,
+        storageProvider: document.storage_provider,
+        storagePath: document.storage_path,
         uploadedBy: {
           name: document.uploader_name,
           role: document.uploader_role,
@@ -1671,6 +1919,597 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
       success: false,
       message: "Unable to retrieve document details."
     });
+  }
+});
+
+// ============================================================
+// AUTHENTICATED DOCUMENT FILE STREAMING & DOWNLOAD
+// ============================================================
+
+app.get("/api/pdfs/:id/file", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    const mimeType = document.mime_type || (
+      document.original_filename?.endsWith(".pdf") || document.filename?.endsWith(".pdf")
+        ? "application/pdf"
+        : document.original_filename?.endsWith(".docx") || document.filename?.endsWith(".docx")
+        ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        : document.original_filename?.endsWith(".pptx") || document.filename?.endsWith(".pptx")
+        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        : "application/octet-stream"
+    );
+
+    const safeOriginalName = (document.original_filename || document.filename || "document.pdf")
+      .replace(/["\r\n]/g, "");
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(safeOriginalName)}"`);
+    res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
+
+    if (document.file_size) {
+      res.setHeader("Content-Length", document.file_size);
+    }
+
+    // 1. Try Firebase Cloud Storage stream if storage_path is recorded
+    if (document.storage_path) {
+      const existsInCloud = await firebaseStorage.fileExists(document.storage_path);
+      if (existsInCloud) {
+        const stream = firebaseStorage.getFileStream(document.storage_path);
+        stream.on("error", (err) => {
+          console.error("Cloud storage stream error:", err);
+          if (!res.headersSent) {
+            res.status(500).json({ success: false, message: "Error streaming document from cloud storage." });
+          }
+        });
+        return stream.pipe(res);
+      }
+    }
+
+    // 2. Fallback to local uploadDir if file is stored locally
+    if (document.filename) {
+      const localPath = path.resolve(uploadDir, document.filename);
+      if (isSafeUploadFilename(document.filename) &&
+          path.dirname(localPath) === path.resolve(uploadDir) &&
+          fs.existsSync(localPath)) {
+        return fs.createReadStream(localPath).pipe(res);
+      }
+    }
+
+    return res.status(404).json({
+      success: false,
+      message: "Physical document file was not found in cloud or local storage."
+    });
+
+  } catch (error) {
+    console.error("Document stream error:", error);
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to stream document."
+      });
+    }
+  }
+});
+
+// ============================================================
+// SIGNED SHORT-LIVED URL & SECURE DOWNLOAD GATEWAY
+// ============================================================
+
+app.get("/api/pdfs/:id/signed-url", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    const storagePath = document.storage_path || `documents/${document.user_id}/${document.filename}`;
+    const signedUrl = await firebaseStorage.getSignedUrl(storagePath, {
+      expiresInMinutes: 15,
+      filename: document.original_filename || document.filename
+    });
+
+    return res.status(200).json({
+      success: true,
+      documentId: document.id,
+      originalFilename: document.original_filename || document.filename,
+      signedUrl,
+      expiresInMinutes: 15
+    });
+
+  } catch (error) {
+    console.error("Generate signed URL error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to generate signed URL."
+    });
+  }
+});
+
+// ============================================================
+// CLOUD STORAGE & DIRECT UPLOAD API (Cloudflare R2 & Fallback)
+// ============================================================
+
+// 1. Request Presigned Upload URL (Client-to-Storage direct upload)
+app.post("/api/storage/presigned-upload", requireAuth, async (req, res) => {
+  try {
+    const { filename, contentType = "application/pdf", classroomId, subjectId, category = "resource", academicYear, semester } = req.body;
+
+    if (!filename || typeof filename !== "string") {
+      return res.status(400).json({ success: false, message: "Filename is required." });
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    if (![".pdf", ".docx", ".pptx"].includes(ext)) {
+      return res.status(400).json({ success: false, message: "Only PDF, DOCX, and PPTX files are permitted." });
+    }
+
+    if (classroomId) {
+      if (req.user.role === "teacher") {
+        const check = await pool.query(
+          "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
+          [classroomId, req.user.id]
+        );
+        if (check.rows.length === 0) {
+          return res.status(403).json({ success: false, message: "You are not authorized to upload to this classroom." });
+        }
+      } else if (req.user.role === "student") {
+        const check = await pool.query(
+          "SELECT 1 FROM classroom_members WHERE classroom_id = $1 AND student_id = $2",
+          [classroomId, req.user.id]
+        );
+        if (check.rows.length === 0) {
+          return res.status(403).json({ success: false, message: "You are not enrolled in this classroom." });
+        }
+      }
+    }
+
+    const sanitizedBase = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const uniqueFilename = `${Date.now()}_${sanitizedBase}`;
+    const storagePath = `documents/${req.user.id}/${uniqueFilename}`;
+
+    const accessScope = classroomId ? "classroom" : "private";
+
+    const insertRes = await pool.query(
+      `INSERT INTO pdfs (
+         user_id, filename, original_filename, file_url, file_size,
+         processing_status, classroom_id, subject_id, category,
+         academic_year, semester, storage_provider, storage_path, mime_type, access_scope
+       ) VALUES ($1, $2, $3, $4, 0, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING id, filename, original_filename, storage_path`,
+      [
+        req.user.id,
+        uniqueFilename,
+        filename,
+        storagePath,
+        classroomId ? Number(classroomId) : null,
+        subjectId ? Number(subjectId) : null,
+        category,
+        academicYear || null,
+        semester || null,
+        cloudStorage.getStorageProviderName(),
+        storagePath,
+        contentType,
+        accessScope
+      ]
+    );
+
+    const pdfRecord = insertRes.rows[0];
+    const presigned = await cloudStorage.getPresignedUploadUrl(storagePath, contentType, 15);
+
+    return res.status(200).json({
+      success: true,
+      pdfId: pdfRecord.id,
+      storagePath,
+      uploadUrl: presigned.uploadUrl,
+      method: presigned.method,
+      headers: presigned.headers,
+      storageProvider: presigned.storageProvider
+    });
+  } catch (error) {
+    console.error("Presigned upload generation error:", error);
+    return res.status(500).json({ success: false, message: "Unable to generate upload URL." });
+  }
+});
+
+// 2. Direct binary upload endpoint for local/fallback storage mode
+app.put("/api/storage/direct-upload", express.raw({ type: "*/*", limit: "60mb" }), async (req, res) => {
+  try {
+    const { path: storagePath, expires, token } = req.query;
+    if (!storagePath || !expires || !token) {
+      return res.status(400).json({ success: false, message: "Missing upload token or path parameters." });
+    }
+
+    const isValid = cloudStorage.verifyUploadToken(storagePath, expires, token);
+    if (!isValid) {
+      return res.status(403).json({ success: false, message: "Invalid or expired upload token." });
+    }
+
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).json({ success: false, message: "Uploaded body is empty." });
+    }
+
+    const contentType = req.headers["content-type"] || "application/pdf";
+    const result = await cloudStorage.saveBuffer(storagePath, req.body, contentType);
+
+    return res.status(200).json({
+      success: true,
+      message: "Direct upload received successfully.",
+      storagePath: result.storagePath,
+      size: result.size
+    });
+  } catch (err) {
+    console.error("Direct upload error:", err);
+    return res.status(500).json({ success: false, message: "Direct upload failed." });
+  }
+});
+
+// 3. Finalize upload & enqueue background processing job
+app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
+  try {
+    const { pdfId, storagePath } = req.body;
+    if (!pdfId) {
+      return res.status(400).json({ success: false, message: "pdfId is required." });
+    }
+
+    const pdfCheck = await pool.query(
+      "SELECT id, storage_path, user_id FROM pdfs WHERE id = $1",
+      [pdfId]
+    );
+    if (pdfCheck.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Document not found." });
+    }
+
+    const pdf = pdfCheck.rows[0];
+    if (String(pdf.user_id) !== String(req.user.id) && req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized." });
+    }
+
+    const effectivePath = storagePath || pdf.storage_path;
+    const head = await cloudStorage.headObject(effectivePath);
+    if (!head.exists) {
+      return res.status(400).json({ success: false, message: "Uploaded object not found in cloud storage." });
+    }
+
+    await pool.query(
+      "UPDATE pdfs SET file_size = $1, processing_status = 'uploaded', updated_at = NOW() WHERE id = $2",
+      [head.size, pdfId]
+    );
+
+    const job = await jobProcessor.enqueueJob(pdfId, "process_document");
+
+    return res.status(200).json({
+      success: true,
+      message: "Document upload finalized and enqueued for processing.",
+      pdfId,
+      jobId: job.id,
+      fileSize: head.size
+    });
+  } catch (err) {
+    console.error("Finalize upload error:", err);
+    return res.status(500).json({ success: false, message: "Unable to finalize upload." });
+  }
+});
+
+// ============================================================
+// DURABLE BACKGROUND JOB QUEUE API
+// ============================================================
+
+app.post("/api/jobs/process-batch", async (req, res) => {
+  try {
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers.authorization;
+    const isCronAuthorized = cronSecret && authHeader === `Bearer ${cronSecret}`;
+    const isUserAuthorized = req.session && req.session.userId;
+
+    if (!isCronAuthorized && !isUserAuthorized) {
+      return res.status(401).json({ success: false, message: "Unauthorized job trigger." });
+    }
+
+    const limit = Math.min(Number(req.query.limit) || 3, 10);
+    const processed = await jobProcessor.processBatch(limit);
+
+    return res.status(200).json({
+      success: true,
+      processedCount: processed,
+      message: `Processed ${processed} job(s).`
+    });
+  } catch (err) {
+    console.error("Process batch error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get("/api/jobs/:id", requireAuth, async (req, res) => {
+  try {
+    const jobRes = await pool.query(
+      `SELECT j.*, p.original_filename, p.user_id as doc_owner_id
+       FROM document_jobs j
+       JOIN pdfs p ON j.pdf_id = p.id
+       WHERE j.id = $1`,
+      [req.params.id]
+    );
+
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Job not found." });
+    }
+
+    const job = jobRes.rows[0];
+    if (String(job.doc_owner_id) !== String(req.user.id) && req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      job: {
+        id: job.id,
+        pdfId: job.pdf_id,
+        filename: job.original_filename,
+        status: job.status,
+        progress: job.progress,
+        attempts: job.attempts,
+        errorMessage: job.error_message,
+        createdAt: job.created_at,
+        updatedAt: job.updated_at
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Error fetching job status." });
+  }
+});
+
+app.get("/api/pdfs/:id/job-status", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+    if (!document) {
+      return res.status(404).json({ success: false, message: "Document not found or access denied." });
+    }
+
+    const jobRes = await pool.query(
+      `SELECT id, status, progress, attempts, error_message, updated_at
+       FROM document_jobs
+       WHERE pdf_id = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.params.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      pdfId: Number(req.params.id),
+      processingStatus: document.processing_status,
+      job: jobRes.rows.length > 0 ? jobRes.rows[0] : null
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Error checking document job status." });
+  }
+});
+
+// ============================================================
+// CLASSROOM MEMBERSHIP LIFECYCLE & HARDENING
+// ============================================================
+
+app.delete("/api/classrooms/:id/members/:studentId", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+    const studentId = req.params.studentId;
+
+    if (req.user.role !== "admin") {
+      const classCheck = await pool.query(
+        "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
+        [classroomId, req.user.id]
+      );
+      if (classCheck.rows.length === 0) {
+        return res.status(403).json({ success: false, message: "You are not authorized to manage this classroom." });
+      }
+    }
+
+    const delRes = await pool.query(
+      "DELETE FROM classroom_members WHERE classroom_id = $1 AND student_id = $2 RETURNING id",
+      [classroomId, studentId]
+    );
+
+    if (delRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Student is not enrolled in this classroom." });
+    }
+
+    await logAnalyticsEvent(req.user.id, "classroom_member_removed", "classroom_members", delRes.rows[0].id, {
+      classroomId,
+      studentId
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Student removed from classroom successfully."
+    });
+  } catch (err) {
+    console.error("Remove classroom member error:", err);
+    return res.status(500).json({ success: false, message: "Failed to remove student." });
+  }
+});
+
+app.post("/api/classrooms/:id/renew-code", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+
+    if (req.user.role !== "admin") {
+      const classCheck = await pool.query(
+        "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
+        [classroomId, req.user.id]
+      );
+      if (classCheck.rows.length === 0) {
+        return res.status(403).json({ success: false, message: "You are not authorized to manage this classroom." });
+      }
+    }
+
+    let newCode;
+    let isUnique = false;
+    for (let attempts = 0; attempts < 5; attempts++) {
+      newCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+      const check = await pool.query("SELECT id FROM classrooms WHERE code = $1", [newCode]);
+      if (check.rows.length === 0) {
+        isUnique = true;
+        break;
+      }
+    }
+
+    if (!isUnique) {
+      return res.status(500).json({ success: false, message: "Failed to generate unique classroom code." });
+    }
+
+    await pool.query(
+      "UPDATE classrooms SET code = $1, updated_at = NOW() WHERE id = $2",
+      [newCode, classroomId]
+    );
+
+    await logAnalyticsEvent(req.user.id, "classroom_code_renewed", "classrooms", classroomId, { newCode });
+
+    return res.status(200).json({
+      success: true,
+      message: "Classroom join code renewed successfully.",
+      code: newCode
+    });
+  } catch (err) {
+    console.error("Renew code error:", err);
+    return res.status(500).json({ success: false, message: "Failed to renew code." });
+  }
+});
+
+app.post("/api/classrooms/:id/leave", requireAuth, async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+
+    const classCheck = await pool.query("SELECT teacher_id FROM classrooms WHERE id = $1", [classroomId]);
+    if (classCheck.rows.length > 0 && String(classCheck.rows[0].teacher_id) === String(req.user.id)) {
+      return res.status(400).json({ success: false, message: "Teachers cannot leave a classroom they own." });
+    }
+
+    const delRes = await pool.query(
+      "DELETE FROM classroom_members WHERE classroom_id = $1 AND student_id = $2 RETURNING id",
+      [classroomId, req.user.id]
+    );
+
+    if (delRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "You are not a member of this classroom." });
+    }
+
+    await logAnalyticsEvent(req.user.id, "classroom_left", "classrooms", classroomId, { studentId: req.user.id });
+
+    return res.status(200).json({
+      success: true,
+      message: "You have left the classroom."
+    });
+  } catch (err) {
+    console.error("Leave classroom error:", err);
+    return res.status(500).json({ success: false, message: "Failed to leave classroom." });
+  }
+});
+
+// ============================================================
+// CROSS-DOCUMENT CLASSROOM SEMANTIC SEARCH (pgvector + Gemini)
+// ============================================================
+
+app.get("/api/classrooms/:id/semantic-search", requireAuth, async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+    const queryText = (req.query.q || "").trim();
+
+    if (!queryText) {
+      return res.status(400).json({ success: false, message: "Search query 'q' is required." });
+    }
+
+    const isTeacher = await pool.query(
+      "SELECT 1 FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
+      [classroomId, req.user.id]
+    );
+    const isEnrolled = await pool.query(
+      "SELECT 1 FROM classroom_members WHERE classroom_id = $1 AND student_id = $2",
+      [classroomId, req.user.id]
+    );
+    const isAdmin = req.user.role === "admin";
+
+    if (isTeacher.rows.length === 0 && isEnrolled.rows.length === 0 && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Access denied to this classroom." });
+    }
+
+    const queryEmb = await embeddingService.generateEmbedding(queryText);
+    const typeCheck = await pool.query("SELECT 1 FROM pg_type WHERE typname = 'vector'");
+    const hasVectorType = typeCheck.rows.length > 0;
+
+    let results = [];
+    if (hasVectorType) {
+      const vectorRes = await pool.query(
+        `SELECT c.id, c.pdf_id, c.chunk_index, c.page_start, c.page_end, c.content, c.metadata,
+                p.original_filename, p.category,
+                (c.embedding <=> $1::vector) as distance
+         FROM pdf_chunks c
+         JOIN pdfs p ON c.pdf_id = p.id
+         WHERE p.classroom_id = $2 AND p.is_archived = FALSE
+         ORDER BY c.embedding <=> $1::vector ASC
+         LIMIT 10`,
+        [embeddingService.formatVectorLiteral(queryEmb), classroomId]
+      );
+      results = vectorRes.rows.map(r => ({
+        id: r.id,
+        pdfId: r.pdf_id,
+        documentTitle: r.original_filename,
+        category: r.category,
+        pageNumber: r.page_start,
+        content: r.content,
+        metadata: r.metadata,
+        similarity: Number((1 - (r.distance || 0)).toFixed(4))
+      }));
+    } else {
+      const chunksRes = await pool.query(
+        `SELECT c.id, c.pdf_id, c.chunk_index, c.page_start, c.page_end, c.content, c.metadata, c.embedding,
+                p.original_filename, p.category
+         FROM pdf_chunks c
+         JOIN pdfs p ON c.pdf_id = p.id
+         WHERE p.classroom_id = $1 AND p.is_archived = FALSE
+         LIMIT 100`,
+        [classroomId]
+      );
+      results = chunksRes.rows
+        .map(r => ({
+          id: r.id,
+          pdfId: r.pdf_id,
+          documentTitle: r.original_filename,
+          category: r.category,
+          pageNumber: r.page_start,
+          content: r.content,
+          metadata: r.metadata,
+          similarity: Number(embeddingService.cosineSimilarity(queryEmb, r.embedding).toFixed(4))
+        }))
+        .filter(r => r.similarity > 0.3)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, 10);
+    }
+
+    await logAnalyticsEvent(req.user.id, "semantic_search", "classrooms", classroomId, {
+      query: queryText,
+      resultCount: results.length
+    });
+
+    return res.status(200).json({
+      success: true,
+      query: queryText,
+      count: results.length,
+      results
+    });
+  } catch (err) {
+    console.error("Semantic search error:", err);
+    return res.status(500).json({ success: false, message: "Semantic search failed." });
   }
 });
 
@@ -1786,20 +2625,67 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
     );
     const history = historyResult.rows.reverse();
 
-    // 3. Extract page-aware text from the document
-    const filePath = path.resolve(uploadDir, document.filename);
-    let pages = [];
-    if (
-      isSafeUploadFilename(document.filename) &&
-      path.dirname(filePath) === path.resolve(uploadDir) &&
-      fs.existsSync(filePath)
-    ) {
-      pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
+    // 3. Check for vector embeddings in pdf_chunks (Hybrid RAG)
+    let selectedChunks = null;
+    try {
+      const chunkCountRes = await pool.query(
+        "SELECT COUNT(*)::int as count FROM pdf_chunks WHERE pdf_id = $1",
+        [document.id]
+      );
+      if (chunkCountRes.rows[0].count > 0) {
+        const queryEmb = await embeddingService.generateEmbedding(message);
+        const typeCheck = await pool.query("SELECT 1 FROM pg_type WHERE typname = 'vector'");
+        if (typeCheck.rows.length > 0) {
+          const vectorRes = await pool.query(
+            `SELECT chunk_index, page_start, content, metadata
+             FROM pdf_chunks
+             WHERE pdf_id = $1
+             ORDER BY embedding <=> $2::vector ASC
+             LIMIT 6`,
+            [document.id, embeddingService.formatVectorLiteral(queryEmb)]
+          );
+          selectedChunks = vectorRes.rows.map(r => ({
+            id: r.chunk_index,
+            pageNumber: r.page_start,
+            text: r.content
+          }));
+        } else {
+          const allChunks = await pool.query(
+            "SELECT chunk_index, page_start, content, embedding FROM pdf_chunks WHERE pdf_id = $1",
+            [document.id]
+          );
+          const scored = allChunks.rows.map(r => ({
+            id: r.chunk_index,
+            pageNumber: r.page_start,
+            text: r.content,
+            score: embeddingService.cosineSimilarity(queryEmb, r.embedding)
+          })).sort((a, b) => b.score - a.score);
+          selectedChunks = scored.slice(0, 6);
+        }
+      }
+    } catch (embErr) {
+      console.warn("Vector search failed, falling back to document extraction:", embErr.message);
     }
-    if (!pages || pages.length === 0) {
-      pages = [{
-        text: `Document: ${document.original_filename}\nCategory: ${document.category || "Study Resource"}\nAcademic Year: ${document.academic_year || "Current Semester"}`
-      }];
+
+    let pages = [];
+    if (!selectedChunks || selectedChunks.length === 0) {
+      try {
+        const { filePath, isTemp } = await getDocumentLocalPath(document);
+        try {
+          pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
+        } finally {
+          if (isTemp && fs.existsSync(filePath)) {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+          }
+        }
+      } catch (e) {
+        console.warn("Could not load document pages for chat:", e.message);
+      }
+      if (!pages || pages.length === 0) {
+        pages = [{
+          text: `Document: ${document.original_filename}\nCategory: ${document.category || "Study Resource"}\nAcademic Year: ${document.academic_year || "Current Semester"}`
+        }];
+      }
     }
 
     // 4. Generate AI response with conversation context
@@ -1807,6 +2693,7 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       mode: "ask-ai",
       question: message,
       pages,
+      selectedChunks,
       history
     });
 
@@ -1889,27 +2776,23 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
       });
     }
 
-    const filePath =
-      path.resolve(uploadDir, document.filename);
+    let parsedText;
+    const { filePath, isTemp } = await getDocumentLocalPath(document);
 
-    if (
-      path.dirname(filePath) !== path.resolve(uploadDir) ||
-      !fs.existsSync(filePath)
-    ) {
-      return res.status(404).json({
-        success: false,
-        message: "The uploaded document file was not found."
-      });
-    }
+    try {
+      const ast =
+        await officeParser.parseOffice(filePath);
 
-    const ast =
-      await officeParser.parseOffice(filePath);
+      parsedText =
+        await ast.to("text");
 
-    const parsedText =
-      await ast.to("text");
-
-    if (typeof parsedText.value !== "string") {
-      throw new Error("Office document parser returned invalid text.");
+      if (typeof parsedText.value !== "string") {
+        throw new Error("Office document parser returned invalid text.");
+      }
+    } finally {
+      if (isTemp && fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch (_) {}
+      }
     }
 
     return res.status(200).json({
@@ -1973,48 +2856,31 @@ app.get(
         });
       }
 
-      const filePath =
-        path.resolve(uploadDir, document.filename);
+      let text = "";
+      const { filePath, isTemp } = await getDocumentLocalPath(document);
 
-      if (
-        path.dirname(filePath) !==
-        path.resolve(uploadDir)
-      ) {
-        console.error(
-          "Resolved document path escaped upload directory:",
-          filePath
-        );
+      try {
+        const ast =
+          await officeParser.parseOffice(filePath);
 
-        return res.status(500).json({
-          success: false,
-          message: "The document path is invalid."
-        });
+        const parsedText =
+          await ast.to("text");
+
+        if (
+          !parsedText ||
+          typeof parsedText.value !== "string"
+        ) {
+          throw new Error(
+            "Document parser returned invalid text."
+          );
+        }
+
+        text = parsedText.value.trim();
+      } finally {
+        if (isTemp && fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (_) {}
+        }
       }
-
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({
-          success: false,
-          message: "The document file was not found."
-        });
-      }
-
-      const ast =
-        await officeParser.parseOffice(filePath);
-
-      const parsedText =
-        await ast.to("text");
-
-      if (
-        !parsedText ||
-        typeof parsedText.value !== "string"
-      ) {
-        throw new Error(
-          "Document parser returned invalid text."
-        );
-      }
-
-      const text =
-        parsedText.value.trim();
 
       return res.status(200).json({
         success: true,
@@ -2188,21 +3054,20 @@ app.post(
         });
       }
 
-      const filePath =
-        path.resolve(uploadDir, document.filename);
-
-      if (
-        !isSafeUploadFilename(document.filename) ||
-        path.dirname(filePath) !== path.resolve(uploadDir) ||
-        !fs.existsSync(filePath)
-      ) {
-        return res.status(404).json({
-          success: false,
-          message: "The document file was not found."
-        });
+      let pages = [];
+      try {
+        const { filePath, isTemp } = await getDocumentLocalPath(document);
+        try {
+          pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
+        } finally {
+          if (isTemp && fs.existsSync(filePath)) {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+          }
+        }
+      } catch (err) {
+        console.warn("Could not retrieve document for AI processing:", err.message);
       }
 
-      let pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
       if (!pages || pages.length === 0) {
         pages = [{
           text: `Document: ${document.original_filename}\nCategory: ${document.category || "Study Resource"}\nAcademic Year: ${document.academic_year || "Current Semester"}`
@@ -2274,11 +3139,21 @@ app.delete("/api/pdfs/:id", requireAuth, async (req, res) => {
     }
 
     const filename = document.filename;
+    const storagePath = document.storage_path;
 
     await pool.query(
       `DELETE FROM pdfs WHERE id = $1`,
       [pdfId]
     );
+
+    // Delete from Firebase Cloud Storage
+    if (storagePath) {
+      try {
+        await firebaseStorage.deleteFile(storagePath);
+      } catch (cloudErr) {
+        console.warn("Could not delete cloud storage object:", cloudErr.message);
+      }
+    }
 
     if (filename) {
       const filePath = path.join(uploadDir, filename);
@@ -3111,7 +3986,7 @@ app.post("/api/subjects/:id/ai/analyze-resources", requireAuth, async (req, res)
     const subjectId = req.params.id;
 
     const docsResult = await pool.query(
-      `SELECT p.id, p.filename, p.original_filename
+      `SELECT p.id, p.filename, p.original_filename, p.storage_path, p.user_id
        FROM pdfs p
        WHERE p.subject_id = $1
          AND p.category = 'resource'
@@ -3142,8 +4017,8 @@ app.post("/api/subjects/:id/ai/analyze-resources", requireAuth, async (req, res)
     const processedDocs = [];
 
     for (const doc of docsResult.rows) {
-      const filePath = path.resolve(uploadDir, doc.filename);
-      if (fs.existsSync(filePath)) {
+      try {
+        const { filePath, isTemp } = await getDocumentLocalPath(doc);
         try {
           const ast = await officeParser.parseOffice(filePath);
           const parsed = await ast.to("text");
@@ -3152,9 +4027,13 @@ app.post("/api/subjects/:id/ai/analyze-resources", requireAuth, async (req, res)
             combinedText += `\n\n--- Document: ${doc.original_filename} ---\n` + text.slice(0, 3000);
             processedDocs.push(doc.original_filename);
           }
-        } catch (e) {
-          console.warn("Could not extract text from", doc.filename, e.message);
+        } finally {
+          if (isTemp && fs.existsSync(filePath)) {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+          }
         }
+      } catch (e) {
+        console.warn("Could not extract text from", doc.filename, e.message);
       }
     }
 
@@ -3200,7 +4079,7 @@ app.post("/api/subjects/:id/ai/analyze-pyqs", requireAuth, async (req, res) => {
     const subjectId = req.params.id;
 
     const docsResult = await pool.query(
-      `SELECT p.id, p.filename, p.original_filename, p.academic_year
+      `SELECT p.id, p.filename, p.original_filename, p.academic_year, p.storage_path, p.user_id
        FROM pdfs p
        WHERE p.subject_id = $1
          AND p.category = 'pyq'
@@ -3231,8 +4110,8 @@ app.post("/api/subjects/:id/ai/analyze-pyqs", requireAuth, async (req, res) => {
     const processedDocs = [];
 
     for (const doc of docsResult.rows) {
-      const filePath = path.resolve(uploadDir, doc.filename);
-      if (fs.existsSync(filePath)) {
+      try {
+        const { filePath, isTemp } = await getDocumentLocalPath(doc);
         try {
           const ast = await officeParser.parseOffice(filePath);
           const parsed = await ast.to("text");
@@ -3241,9 +4120,13 @@ app.post("/api/subjects/:id/ai/analyze-pyqs", requireAuth, async (req, res) => {
             combinedText += `\n\n--- PYQ Paper [${doc.academic_year || "Unknown Year"}]: ${doc.original_filename} ---\n` + text.slice(0, 3000);
             processedDocs.push(`${doc.original_filename} (${doc.academic_year || "N/A"})`);
           }
-        } catch (e) {
-          console.warn("Could not extract text from PYQ", doc.filename, e.message);
+        } finally {
+          if (isTemp && fs.existsSync(filePath)) {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+          }
         }
+      } catch (e) {
+        console.warn("Could not extract text from PYQ", doc.filename, e.message);
       }
     }
 
@@ -3315,6 +4198,28 @@ app.get("/api/admin/metrics", requireAuth, requireRole(["admin"]), async (req, r
       SELECT COUNT(*)::int as total_subjects FROM subjects
     `);
 
+    const jobStats = await pool.query(`
+      SELECT
+        COUNT(*)::int as total_jobs,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END)::int as pending_jobs,
+        COUNT(CASE WHEN status = 'processing' THEN 1 END)::int as processing_jobs,
+        COUNT(CASE WHEN status = 'completed' THEN 1 END)::int as completed_jobs,
+        COUNT(CASE WHEN status = 'failed' THEN 1 END)::int as failed_jobs
+      FROM document_jobs
+    `);
+
+    let storageMetrics = { totalFiles: 0, totalBytes: 0, provider: "cloud" };
+    try {
+      storageMetrics = await cloudStorage.getStorageMetrics();
+    } catch (_) {}
+
+    const recentActivity = await pool.query(`
+      SELECT id, event_name, entity_type, entity_id, created_at
+      FROM analytics_events
+      ORDER BY created_at DESC
+      LIMIT 10
+    `);
+
     return res.status(200).json({
       success: true,
       metrics: {
@@ -3326,7 +4231,20 @@ app.get("/api/admin/metrics", requireAuth, requireRole(["admin"]), async (req, r
         totalSubjects: subjectStats.rows[0].total_subjects,
         totalDocuments: docStats.rows[0].total_documents,
         resourceCount: docStats.rows[0].resource_count,
-        pyqCount: docStats.rows[0].pyq_count
+        pyqCount: docStats.rows[0].pyq_count,
+        jobs: {
+          total: jobStats.rows[0].total_jobs,
+          pending: jobStats.rows[0].pending_jobs,
+          processing: jobStats.rows[0].processing_jobs,
+          completed: jobStats.rows[0].completed_jobs,
+          failed: jobStats.rows[0].failed_jobs
+        },
+        storage: {
+          totalFiles: storageMetrics.totalFiles,
+          totalBytes: storageMetrics.totalBytes,
+          provider: storageMetrics.provider || "cloud"
+        },
+        recentActivity: recentActivity.rows
       }
     });
 
@@ -3395,9 +4313,11 @@ async function startServer() {
 
     console.log("PostgreSQL connected successfully.");
 
-    if (process.env.NODE_ENV !== "test") {
+    if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) {
       serverInstance = app.listen(PORT, () => {
         console.log(`StudyReader backend running on http://localhost:${PORT}`);
+        // Start background durable queue worker
+        jobProcessor.startWorker(4000);
       });
 
       // Keep event loop active indefinitely on Windows
@@ -3423,5 +4343,5 @@ process.on("exit", (code) => {
 
 startServer();
 
-module.exports = { app, pool, startServer };
+module.exports = { app, pool, jobProcessor, startServer };
 

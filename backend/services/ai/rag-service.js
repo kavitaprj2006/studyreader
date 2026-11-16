@@ -1,6 +1,6 @@
 const MAX_CHUNK_LENGTH = 1600;
 const MAX_CONTEXT_CHUNKS = 6;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 const STOP_WORDS = new Set([
   "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -601,7 +601,7 @@ Requirements:
   };
 }
 
-async function answer({ mode, question = "", text = "", pages = [], history = [], summaryType = "", documentId = null }) {
+async function answer({ mode, question = "", text = "", pages = [], history = [], summaryType = "", documentId = null, chunks = null, selectedChunks: preselectedChunks = null }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || !apiKey.trim()) {
     throw new Error("GEMINI_API_KEY is not configured in backend/.env. Please provide a valid Gemini API key to enable AI tutoring.");
@@ -617,17 +617,26 @@ async function answer({ mode, question = "", text = "", pages = [], history = []
     });
   }
 
-  const inputSource = Array.isArray(pages) && pages.length > 0 ? pages : text;
-  const chunks = createChunks(inputSource);
+  let selectedChunks;
+  if (Array.isArray(preselectedChunks) && preselectedChunks.length > 0) {
+    selectedChunks = preselectedChunks;
+  } else {
+    const inputSource = (Array.isArray(chunks) && chunks.length > 0)
+      ? chunks
+      : (Array.isArray(pages) && pages.length > 0 ? pages : text);
+    const chunkList = (Array.isArray(chunks) && chunks.length > 0)
+      ? chunks
+      : createChunks(inputSource);
 
-  if (!chunks.length) {
-    throw new Error("No extracted document text is available for AI processing.");
+    if (!chunkList.length) {
+      throw new Error("No extracted document text is available for AI processing.");
+    }
+
+    selectedChunks =
+      mode === "ask-ai" && question
+        ? selectRelevantChunks(chunkList, question)
+        : chunkList.slice(0, MAX_CONTEXT_CHUNKS);
   }
-
-  const selectedChunks =
-    mode === "ask-ai" && question
-      ? selectRelevantChunks(chunks, question)
-      : chunks.slice(0, MAX_CONTEXT_CHUNKS);
 
   const sources = selectedChunks.map((chunk) => ({
     chunkId: chunk.id,

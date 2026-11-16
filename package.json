@@ -1,0 +1,30 @@
+{
+  "name": "studyreader",
+  "version": "2.0.0",
+  "private": true,
+  "description": "StudyReader — Cloud AI Academic Document Platform",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "node --watch backend/server.js",
+    "test:cloud": "node backend/scripts/verify-cloud-architecture.js",
+    "postinstall": "cd backend && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.758.0",
+    "@aws-sdk/s3-request-presigner": "^3.758.0",
+    "bcrypt": "^6.0.0",
+    "connect-pg-simple": "^10.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "firebase-admin": "^14.5.1",
+    "multer": "^2.4.0",
+    "officeparser": "^8.0.0",
+    "pg": "^8.23.0"
+  }
+}
