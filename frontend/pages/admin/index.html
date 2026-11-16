@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyReader — Admin Portal</title>
+  <link rel="stylesheet" href="../../styles/app.css">
+  <style>
+    .admin-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 13px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .admin-table th,
+    .admin-table td {
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .admin-table th {
+      background: var(--surface-soft);
+      font-weight: 700;
+      color: var(--text-secondary);
+    }
+    .role-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+    .role-badge.student { background: #eff6ff; color: #2563eb; }
+    .role-badge.teacher { background: #fdf4ff; color: #a855f7; }
+    .role-badge.admin { background: #fee2e2; color: #dc2626; }
+
+    .status-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 6px;
+    }
+    .status-badge.approved { background: #eaf8f2; color: #35a979; }
+    .status-badge.pending { background: #fff5e7; color: #e39a3b; }
+
+    .btn-approve {
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      cursor: pointer;
+    }
+    .btn-approve:hover {
+      background: #f1f5f9;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="dashboard-layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark" style="background: #dc2626;">A</div>
+        <span>StudyReader Admin</span>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="index.html" class="nav-item active">
+          <span class="nav-icon">⚙</span>
+          <span>Overview & Metrics</span>
+        </a>
+        <a href="../dashboard/index.html" class="nav-item">
+          <span class="nav-icon">🎓</span>
+          <span>Student Portal</span>
+        </a>
+        <a href="../teacher-dashboard/index.html" class="nav-item">
+          <span class="nav-icon">👨‍🏫</span>
+          <span>Teacher Portal</span>
+        </a>
+      </nav>
+      <div class="sidebar-bottom">
+        <button id="logout" class="logout-button">
+          <span>↪</span>
+          <span>Log out</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="dashboard-main">
+      <header class="dashboard-topbar">
+        <div class="search-box">
+          <span class="search-icon">⌕</span>
+          <input type="search" placeholder="Search users, classrooms, or system logs...">
+        </div>
+        <div class="topbar-actions">
+          <div class="user-profile">
+            <div class="avatar" id="admin-avatar" style="background: #dc2626;">A</div>
+            <div class="user-info">
+              <strong id="admin-name">Admin</strong>
+              <span style="color: #dc2626; font-size: 11px; font-weight: 700;">System Administrator</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="dashboard-content">
+        <section class="welcome-section">
+          <div>
+            <p class="eyebrow" style="color: #dc2626;">ADMINISTRATION</p>
+            <h1 id="welcome">System Control Center</h1>
+            <p class="welcome-text">Platform activity monitoring, user role management, and institutional administration.</p>
+          </div>
+        </section>
+
+        <section class="stats-grid">
+          <article class="stat-card">
+            <div class="stat-icon purple">👥</div>
+            <div>
+              <span class="stat-label">Total Users</span>
+              <strong class="stat-value" id="stat-total-users">-</strong>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-icon blue">👨‍🏫</div>
+            <div>
+              <span class="stat-label">Teacher Accounts</span>
+              <strong class="stat-value" id="stat-teachers">-</strong>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-icon green">🎓</div>
+            <div>
+              <span class="stat-label">Student Accounts</span>
+              <strong class="stat-value" id="stat-students">-</strong>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-icon orange">🏛</div>
+            <div>
+              <span class="stat-label">Active Classrooms</span>
+              <strong class="stat-value" id="stat-classrooms">-</strong>
+            </div>
+          </article>
+        </section>
+
+        <!-- USERS MANAGEMENT TABLE -->
+        <section class="dashboard-card" style="margin-top: 24px;">
+          <div class="card-header">
+            <div>
+              <h2>User Management</h2>
+              <p>Platform accounts, roles, and authorization status</p>
+            </div>
+          </div>
+
+          <div style="overflow-x: auto;">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Registration Date</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body">
+                <tr>
+                  <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading user accounts...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="../../scripts/config.js"></script>
+  <script src="../../scripts/navigation.js"></script>
+  <script>
+    const API_BASE_URL = window.API_BASE_URL || "http://127.0.0.1:3000";
+
+    async function checkAdmin() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/auth/me`, { credentials: "include" });
+        if (!response.ok) {
+          window.location.href = "../login/index.html";
+          return;
+        }
+        const data = await response.json();
+        if (data.user.role !== "admin") {
+          alert("Forbidden: Admin access only.");
+          window.location.href = data.user.role === "teacher" ? "../teacher-dashboard/index.html" : "../dashboard/index.html";
+          return;
+        }
+        document.getElementById("admin-name").textContent = data.user.name;
+        document.getElementById("admin-avatar").textContent = data.user.name.charAt(0).toUpperCase();
+
+        await loadMetrics();
+        await loadUsers();
+      } catch (err) {
+        window.location.href = "../login/index.html";
+      }
+    }
+
+    async function loadMetrics() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/metrics`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const m = data.metrics;
+        document.getElementById("stat-total-users").textContent = m.totalUsers;
+        document.getElementById("stat-teachers").textContent = m.teacherCount;
+        document.getElementById("stat-students").textContent = m.studentCount;
+        document.getElementById("stat-classrooms").textContent = m.totalClassrooms;
+      } catch (err) {
+        console.error("Metrics error:", err);
+      }
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/users`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const users = data.users || [];
+        const tbody = document.getElementById("users-table-body");
+
+        tbody.innerHTML = users.map(u => `
+          <tr>
+            <td>#${u.id}</td>
+            <td><strong>${escapeHTML(u.name)}</strong></td>
+            <td>${escapeHTML(u.email)}</td>
+            <td><span class="role-badge ${u.role}">${u.role}</span></td>
+            <td><span class="status-badge ${u.is_approved ? 'approved' : 'pending'}">${u.is_approved ? 'Approved' : 'Pending'}</span></td>
+            <td>${new Date(u.created_at).toLocaleDateString()}</td>
+            <td>
+              <button class="btn-approve" onclick="toggleApprove(${u.id})">
+                ${u.is_approved ? 'Revoke' : 'Approve'}
+              </button>
+            </td>
+          </tr>
+        `).join("");
+      } catch (err) {
+        console.error("Users error:", err);
+      }
+    }
+
+    async function toggleApprove(userId) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/approve`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (res.ok) {
+          await loadUsers();
+          await loadMetrics();
+        }
+      } catch (err) {
+        console.error("Approve error:", err);
+      }
+    }
+
+    function escapeHTML(str) {
+      const div = document.createElement("div");
+      div.textContent = str ?? "";
+      return div.innerHTML;
+    }
+
+    document.getElementById("logout").addEventListener("click", async () => {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
+      window.location.href = "../login/index.html";
+    });
+
+    checkAdmin();
+  </script>
+</body>
+</html>

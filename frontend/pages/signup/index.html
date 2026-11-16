@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyReader — Create Account</title>
+  <link rel="stylesheet" href="../../styles/auth.css">
+  <script src="../../scripts/config.js"></script>
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card" aria-labelledby="signup-title">
+      <div class="brand-header">
+        <div class="brand-mark">S</div>
+        <span class="brand-name">StudyReader</span>
+      </div>
+      <h1 id="signup-title">Create your account</h1>
+      <p class="subtitle">Join thousands of students and teachers organizing academic resources with AI.</p>
+
+      <form id="signup-form" novalidate>
+        <div class="role-group">
+          <label>Join as</label>
+          <div class="role-selector" role="radiogroup" aria-label="Account Role">
+            <button type="button" class="role-option active" data-role="student" role="radio" aria-checked="true">
+              <span>🎓</span> Student
+            </button>
+            <button type="button" class="role-option" data-role="teacher" role="radio" aria-checked="false">
+              <span>👨‍🏫</span> Teacher
+            </button>
+          </div>
+          <input type="hidden" id="selected-role" name="role" value="student">
+        </div>
+
+        <label for="name">Full Name</label>
+        <input id="name" name="name" type="text" placeholder="e.g. Kavita Sharma" autocomplete="name" maxlength="100" required>
+
+        <label for="email">Email Address</label>
+        <input id="email" name="email" type="email" placeholder="name@college.edu" autocomplete="email" maxlength="255" required>
+
+        <label for="password">Password</label>
+        <div class="password-row">
+          <input id="password" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" maxlength="128" required>
+          <button type="button" id="toggle-password" class="secondary">Show</button>
+        </div>
+        <small>Use at least 8 characters.</small>
+
+        <p id="form-message" class="message" role="alert" aria-live="polite"></p>
+        <button id="submit-button" type="submit">Create Account</button>
+      </form>
+
+      <p class="switch">Already have an account? <a href="../login/index.html">Log in</a></p>
+    </section>
+  </main>
+
+  <script src="signup.js"></script>
+</body>
+</html>

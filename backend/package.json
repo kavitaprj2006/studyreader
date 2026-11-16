@@ -1,0 +1,25 @@
+{
+  "name": "studyreader-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StudyReader backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "connect-pg-simple": "^10.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "multer": "^2.4.0",
+    "officeparser": "^8.0.0",
+    "pg": "^8.23.0"
+  }
+}

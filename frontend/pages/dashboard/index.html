@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyReader — Student Dashboard</title>
+  <link rel="stylesheet" href="../../styles/app.css">
+</head>
+
+<body>
+
+  <!-- Toast Notification -->
+  <div id="toast-banner" class="toast-banner"></div>
+
+  <div class="dashboard-layout">
+
+    <!-- ================= SIDEBAR (COLLAPSIBLE DARK THEME) ================= -->
+
+    <aside class="sidebar" id="app-sidebar">
+
+      <div class="sidebar-header">
+        <div class="sidebar-brand">
+          <div class="brand-mark">S</div>
+          <span>StudyReader</span>
+        </div>
+        <button type="button" id="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Toggle Sidebar">
+          ☰
+        </button>
+      </div>
+
+      <nav class="sidebar-nav">
+
+        <a href="index.html" class="nav-item active">
+          <span class="nav-icon">⌂</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+
+        <a href="index.html" class="nav-item" id="nav-classrooms">
+          <span class="nav-icon">🏛</span>
+          <span class="nav-label">My Classrooms</span>
+        </a>
+
+        <a href="../library/index.html" class="nav-item">
+          <span class="nav-icon">▣</span>
+          <span class="nav-label">My Library</span>
+        </a>
+
+        <a href="../pdf-study/index.html" class="nav-item">
+          <span class="nav-icon">▤</span>
+          <span class="nav-label">Workspace & AI</span>
+        </a>
+
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button id="logout" class="logout-button">
+          <span class="nav-icon">↪</span>
+          <span class="nav-label">Log out</span>
+        </button>
+      </div>
+
+    </aside>
+
+
+    <!-- ================= MAIN CONTENT ================= -->
+
+    <main class="dashboard-main">
+
+      <!-- TOPBAR -->
+
+      <header class="dashboard-topbar">
+
+        <div class="mobile-brand">
+          <div class="brand-mark">S</div>
+          <strong>StudyReader</strong>
+        </div>
+
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="search" id="topbar-search" placeholder="Search subjects, resources, or ask AI..." aria-label="Search">
+        </div>
+
+        <div class="topbar-actions">
+
+          <button type="button" class="topbar-icon-btn" aria-label="Notifications">
+            <span>🔔</span>
+            <span class="notification-badge"></span>
+          </button>
+
+          <div class="user-profile">
+            <div class="avatar" id="user-avatar">S</div>
+
+            <div class="user-info">
+              <strong id="user-name">Student</strong>
+              <span class="student-badge">Student</span>
+            </div>
+
+            <span class="profile-arrow">⌄</span>
+          </div>
+
+        </div>
+
+      </header>
+
+
+      <!-- DASHBOARD CONTENT -->
+
+      <div class="dashboard-content">
+
+        <!-- WELCOME HERO BANNER (MATCHING MOCKUP) -->
+
+        <section class="welcome-section">
+
+          <div class="welcome-info">
+            <p class="eyebrow">YOUR ACADEMIC HUB</p>
+            <h1 id="welcome">Welcome back!</h1>
+            <p class="welcome-text">
+              Continue your learning, manage your subjects, access classroom materials, and prepare smarter with AI.
+            </p>
+          </div>
+
+          <div class="welcome-illustration">
+            🎓
+          </div>
+
+        </section>
+
+
+        <!-- STATISTICS GRID (4 COLORFUL ROUNDED CARDS) -->
+
+        <section class="stats-grid">
+
+          <article class="stat-card">
+            <div class="stat-icon purple">
+              📚
+            </div>
+            <div>
+              <span class="stat-label">Subjects</span>
+              <strong class="stat-value" id="subject-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon blue">
+              🏛
+            </div>
+            <div>
+              <span class="stat-label">Classrooms</span>
+              <strong class="stat-value" id="classroom-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon green">
+              📄
+            </div>
+            <div>
+              <span class="stat-label">Resources</span>
+              <strong class="stat-value" id="resource-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon orange">
+              📑
+            </div>
+            <div>
+              <span class="stat-label">PYQs</span>
+              <strong class="stat-value" id="pyq-count">0</strong>
+            </div>
+          </article>
+
+        </section>
+
+
+        <!-- MAIN TWO-COLUMN DASHBOARD GRID -->
+
+        <div class="dashboard-grid-layout">
+
+          <!-- LEFT COLUMN: MY SUBJECTS & RECENT MATERIALS -->
+
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+
+            <!-- MY SUBJECTS -->
+
+            <section class="dashboard-card">
+
+              <div class="card-header">
+                <div>
+                  <h2>My Subjects</h2>
+                  <p>Semester classrooms and personalized subject spaces</p>
+                </div>
+
+                <a href="../library/index.html" class="view-all-link">
+                  View All →
+                </a>
+              </div>
+
+              <!-- Empty State -->
+              <div class="empty-state" id="subjects-empty-state">
+                <span class="empty-icon">📂</span>
+                <h3>No subjects added yet</h3>
+                <p>
+                  Join a classroom using the 6-character code provided by your instructor, or create a personal subject space to organize your study notes.
+                </p>
+                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 16px;">
+                  <button id="btn-empty-join" class="action-btn primary" style="width: auto; padding: 10px 18px;">
+                    + Join Classroom
+                  </button>
+                  <button id="btn-empty-subject" class="action-btn" style="width: auto; padding: 10px 18px;">
+                    + Add Subject
+                  </button>
+                </div>
+              </div>
+
+              <!-- Subject Cards Grid -->
+              <div id="subjects-grid" class="subjects-grid" style="display: none;"></div>
+
+            </section>
+
+
+            <!-- RECENT MATERIALS -->
+
+            <section class="dashboard-card">
+
+              <div class="card-header">
+                <div>
+                  <h2>Recent Materials</h2>
+                  <p>Latest notes, slides, and PYQs available to you</p>
+                </div>
+
+                <a href="../library/index.html" class="view-all-link">
+                  Browse All →
+                </a>
+              </div>
+
+              <div id="recent-materials-container">
+                <div class="empty-state" id="recent-empty-state">
+                  <span class="empty-icon">📄</span>
+                  <h3>No materials yet</h3>
+                  <p>Classroom resources published by teachers and personal uploads will appear here.</p>
+                </div>
+                <div id="recent-materials-list" style="display: none; display: flex; flex-direction: column; gap: 10px;"></div>
+              </div>
+
+            </section>
+
+          </div>
+
+
+          <!-- RIGHT COLUMN: QUICK ACTIONS CARD -->
+
+          <aside style="display: flex; flex-direction: column; gap: 24px;">
+
+            <div class="quick-actions-card">
+              <h3>Quick Actions</h3>
+
+              <button type="button" id="btn-join-classroom" class="action-btn primary">
+                <span class="action-btn-icon">🏛</span>
+                <span>Join Classroom</span>
+              </button>
+
+              <button type="button" id="quick-upload-doc" class="action-btn">
+                <span class="action-btn-icon">📤</span>
+                <span>Upload Personal Notes</span>
+              </button>
+
+              <button type="button" id="btn-add-subject" class="action-btn">
+                <span class="action-btn-icon">➕</span>
+                <span>Add Personal Subject</span>
+              </button>
+
+              <button type="button" onclick="window.location.href='../pdf-study/index.html'" class="action-btn">
+                <span class="action-btn-icon">✨</span>
+                <span>Ask AI Tutor</span>
+              </button>
+            </div>
+
+          </aside>
+
+        </div>
+
+      </div>
+
+    </main>
+
+  </div>
+
+
+  <!-- ================= MOBILE BOTTOM NAVIGATION ================= -->
+
+  <nav class="mobile-bottom-nav">
+    <a href="index.html" class="mobile-nav-item active">
+      <span class="mobile-nav-icon">⌂</span>
+      <span>Home</span>
+    </a>
+    <a href="../library/index.html" class="mobile-nav-item">
+      <span class="mobile-nav-icon">▣</span>
+      <span>Library</span>
+    </a>
+    <a href="../pdf-study/index.html" class="mobile-nav-item">
+      <span class="mobile-nav-icon">✨</span>
+      <span>AI Study</span>
+    </a>
+    <a href="javascript:void(0)" class="mobile-nav-item" onclick="document.getElementById('logout').click()">
+      <span class="mobile-nav-icon">↪</span>
+      <span>Logout</span>
+    </a>
+  </nav>
+
+
+  <!-- ================= MODALS (PRESERVED WITH ALL IDS) ================= -->
+
+  <!-- Modal: Join Classroom -->
+  <dialog id="modal-join-classroom" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Join a Classroom</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-join-classroom">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-join-classroom">
+          <div class="form-group">
+            <label for="input-join-code">Classroom Code (6 Characters)</label>
+            <input type="text" id="input-join-code" placeholder="e.g. CS501A" maxlength="10" required style="text-transform: uppercase; font-family: var(--font-mono); font-weight: 700; letter-spacing: 2px;">
+            <small style="color: var(--text-secondary); margin-top: 5px; display: block;">Ask your teacher for the classroom code.</small>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-join-classroom">Cancel</button>
+            <button type="submit" id="btn-submit-join" class="btn-sm primary">Join Classroom</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Create Personal Subject -->
+  <dialog id="modal-create-subject" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Add Personal Subject Space</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-create-subject">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-create-subject">
+          <div class="form-group">
+            <label for="input-pers-subject-name">Subject Title</label>
+            <input type="text" id="input-pers-subject-name" placeholder="e.g. Artificial Intelligence" required>
+          </div>
+          <div class="form-group">
+            <label for="input-pers-subject-code">Subject Code (Optional)</label>
+            <input type="text" id="input-pers-subject-code" placeholder="e.g. CS-501">
+          </div>
+          <div class="form-group">
+            <label for="input-pers-subject-desc">Description (Optional)</label>
+            <textarea id="input-pers-subject-desc" rows="2" placeholder="Brief notes about this subject space"></textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-create-subject">Cancel</button>
+            <button type="submit" class="btn-sm primary">Create Subject</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Upload Personal Document -->
+  <dialog id="modal-upload-student-doc" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div>
+          <h3>Upload Personal Study Material</h3>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Stored securely in your private subject space.</p>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-upload-student-doc">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-upload-student-doc">
+          <div class="form-group">
+            <label for="select-student-subject">Subject Space</label>
+            <select id="select-student-subject">
+              <option value="">General / No specific subject</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="select-student-category">Material Category</label>
+            <select id="select-student-category">
+              <option value="resource">Study Notes / Lecture Slides</option>
+              <option value="pyq">Previous Year Question Paper (PYQ)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="input-student-file">Document File (PDF, DOCX, PPTX)</label>
+            <input type="file" id="input-student-file" accept=".pdf,.docx,.pptx" required>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-upload-student-doc">Cancel</button>
+            <button type="submit" id="btn-submit-student-upload" class="btn-sm primary">Upload Document</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Scripts -->
+  <script src="../../scripts/config.js"></script>
+  <script src="../../scripts/navigation.js"></script>
+  <script src="../../scripts/duplicate-upload.js"></script>
+  <script src="dashboard.js"></script>
+
+</body>
+
+</html>

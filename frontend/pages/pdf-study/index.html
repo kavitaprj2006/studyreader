@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyReader — PDF Study Workspace</title>
+  <link rel="stylesheet" href="../../styles/app.css">
+</head>
+
+<body>
+
+  <div class="pdf-study-layout">
+
+    <!-- =========================================================
+         TOPBAR (DOCUMENT TITLE, PAGE CONTROLS & ZOOM)
+         ========================================================= -->
+
+    <header class="pdf-study-topbar">
+
+      <div class="pdf-study-title-area">
+
+        <button type="button" id="back-to-library" class="pdf-study-back">
+          ← Library
+        </button>
+
+        <div class="pdf-study-document">
+          <strong id="pdf-title">Loading Document...</strong>
+          <span id="pdf-status">Preparing study space...</span>
+        </div>
+
+        <button type="button" id="btn-switch-doc" class="viewer-button" title="Switch Document" style="margin-left: 8px; font-size: 12px; padding: 4px 10px; border-radius: 6px; font-weight: 600;">
+          📁 Switch Doc
+        </button>
+
+      </div>
+
+      <!-- VIEWER CONTROLS (PAGES & ZOOM) -->
+
+      <div id="pdf-viewer-toolbar" class="pdf-viewer-toolbar" style="border: none; background: transparent;">
+
+        <div class="viewer-navigation">
+          <button type="button" id="previous-page" class="viewer-button" title="Previous Page" disabled>
+            ‹
+          </button>
+
+          <span class="page-counter">
+            <input type="number" id="current-page" min="1" value="1" aria-label="Page number">
+            <span>/</span>
+            <span id="total-pages">0</span>
+          </span>
+
+          <button type="button" id="next-page" class="viewer-button" title="Next Page" disabled>
+            ›
+          </button>
+        </div>
+
+        <div class="viewer-zoom">
+          <button type="button" id="zoom-out" class="viewer-button" title="Zoom Out">
+            −
+          </button>
+
+          <span id="zoom-level" style="font-size: 13px; font-weight: 700; min-width: 48px; text-align: center;">
+            100%
+          </span>
+
+          <button type="button" id="zoom-in" class="viewer-button" title="Zoom In">
+            +
+          </button>
+
+          <button type="button" id="fit-width" class="viewer-button viewer-fit">
+            Fit Width
+          </button>
+        </div>
+
+      </div>
+
+    </header>
+
+
+    <!-- =========================================================
+         MAIN STUDY AREA (LEFT TOOLBAR + VIEWER + RIGHT AI TOOLS)
+         ========================================================= -->
+
+    <main class="pdf-study-main">
+
+      <!-- LEFT THIN DARK STUDY TOOLBAR (SIMPLIFIED TO 4 CORE ACTIONS) -->
+
+      <aside class="pdf-study-sidebar">
+
+        <button type="button" class="study-tool active" data-tool="view" title="Read Mode">
+          <span>📖</span>
+          <span>Read PDF</span>
+        </button>
+
+        <button type="button" class="study-tool" data-tool="summary" title="Revision Summary">
+          <span>≣</span>
+          <span>Summary</span>
+        </button>
+
+        <button type="button" class="study-tool" data-tool="ask-ai" title="Ask AI Tutor">
+          <span>✨</span>
+          <span>AI Tutor</span>
+        </button>
+
+        <button type="button" class="study-tool" data-tool="read-aloud" title="Read Aloud">
+          <span>🔊</span>
+          <span>Read Aloud</span>
+        </button>
+
+      </aside>
+
+
+      <!-- CENTER PDF VIEWER -->
+
+      <section class="pdf-viewer-area">
+
+        <!-- CANVAS CONTAINER -->
+
+        <div id="pdf-canvas-container" class="pdf-canvas-container">
+
+          <!-- Friendly Empty Selection State -->
+          <div id="pdf-empty-selection" class="pdf-empty-selection" hidden>
+            <div class="empty-selection-icon">📚</div>
+            <h2>Choose a Study Document</h2>
+            <p>Select a PDF or lecture document from your library, or upload a new one to begin reading with your AI Tutor.</p>
+            <div class="empty-selection-actions">
+              <button type="button" id="btn-empty-choose-library" class="btn-sm primary">
+                <span>📁</span> Choose from My Library
+              </button>
+              <button type="button" id="btn-empty-upload-doc" class="btn-sm">
+                <span>⬆️</span> + Add New PDF
+              </button>
+            </div>
+          </div>
+
+          <div id="pdf-loading" class="pdf-loading" style="padding: 20px; font-weight: 600; color: var(--text-secondary);">
+            Loading document...
+          </div>
+
+          <div class="pdf-page-wrapper" id="pdf-page-wrapper">
+            <canvas id="pdf-canvas"></canvas>
+            <div id="pdf-text-layer" class="textLayer"></div>
+          </div>
+
+          <pre id="document-text" class="document-text" hidden></pre>
+
+          <div id="pdf-error" class="pdf-viewer-error" hidden style="color: #ef4444; padding: 20px; font-weight: 600;">
+            Unable to load this document.
+          </div>
+
+        </div>
+
+        <!-- Floating Text Selection Action Popup -->
+        <div id="pdf-selection-popup" class="pdf-selection-popup">
+          <button type="button" id="btn-explain-selection">
+            <span>✨</span> Explain Selection
+          </button>
+          <button type="button" id="btn-copy-selection">
+            <span>📋</span> Copy
+          </button>
+        </div>
+
+
+        <!-- NEURAL READ ALOUD PANEL (DOCKED AT BOTTOM) -->
+
+        <section id="read-aloud-panel" class="read-aloud-panel" hidden>
+
+          <div class="read-aloud-heading">
+            <strong>🔊 Read Aloud</strong>
+            <span id="read-aloud-progress">Ready</span>
+            <button type="button" id="btn-close-read-aloud" class="ai-header-btn" title="Close Read Aloud" style="margin-left: auto; padding: 2px 8px; font-size: 13px;">✕</button>
+          </div>
+
+          <div class="read-aloud-controls">
+            <button type="button" id="read-aloud-previous">‹ Prev</button>
+            <button type="button" id="read-aloud-play">▶ Play</button>
+            <button type="button" id="read-aloud-pause">⏸ Pause</button>
+            <button type="button" id="read-aloud-stop">⏹ Stop</button>
+            <button type="button" id="read-aloud-next">Next ›</button>
+          </div>
+
+          <div class="read-aloud-options">
+            <label>
+              Voice
+              <select id="read-aloud-voice"></select>
+            </label>
+
+            <label>
+              Speed
+              <select id="read-aloud-speed">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+
+            <label class="read-aloud-checkbox">
+              <input type="checkbox" id="read-aloud-all">
+              Continuous
+            </label>
+          </div>
+
+          <p id="read-aloud-error" class="read-aloud-error" hidden></p>
+
+        </section>
+
+      </section>
+
+
+      <!-- RIGHT AI STUDY TOOLS & ASSISTANT PANEL (RESIZABLE & EXPANDABLE) -->
+
+      <aside id="document-ai-panel" class="document-ai-panel" hidden>
+
+        <!-- Drag Boundary Resizer -->
+        <div id="ai-panel-resizer" class="ai-panel-resizer" title="Drag to resize panel"></div>
+
+        <div class="document-ai-heading">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <strong id="document-ai-title">✨ Academic AI Tutor</strong>
+            <span id="document-ai-status" style="font-size: 11px; color: var(--text-secondary);"></span>
+          </div>
+
+          <div class="ai-header-controls">
+            <button type="button" id="btn-expand-ai-panel" class="ai-header-btn" title="Expand / Shrink (720px)">
+              <span id="expand-icon">⤢</span> <span id="expand-text">Expand</span>
+            </button>
+            <button type="button" id="btn-fullscreen-ai-panel" class="ai-header-btn" title="Full-View Chat Page">
+              <span id="fullscreen-icon">↗</span> <span id="fullscreen-text">Full-View</span>
+            </button>
+            <button type="button" id="btn-close-ai-panel" class="ai-header-btn" title="Close Panel" style="padding: 4px 7px;">✕</button>
+          </div>
+        </div>
+
+        <!-- Full-View Return Header Bar -->
+        <div class="full-view-return-bar" id="full-view-return-bar">
+          <div>
+            <strong style="color: #0f172a; font-size: 14px;">Full-Page AI Tutor Workspace</strong>
+            <span style="font-size: 12px; color: var(--text-secondary); margin-left: 8px;">Document context & history preserved</span>
+          </div>
+          <button type="button" id="btn-return-to-pdf" class="btn-sm" style="padding: 6px 14px; font-weight: 700;">
+            ← Return to Document
+          </button>
+        </div>
+
+        <!-- VIEW 1: PERSISTENT AI TUTOR CHAT -->
+        <div id="ai-chat-view" class="ai-tool-view" style="display: flex; flex-direction: column; height: 100%; overflow: hidden;">
+          <!-- Quick Suggestion Chips (Sticky Top Toolbar) -->
+          <div id="chat-chips-container" class="document-ai-chips chat-chips-sticky"></div>
+
+          <div id="chat-thread" class="chat-thread-container">
+            <!-- Messages rendered dynamically here -->
+          </div>
+
+          <!-- Chat Composer -->
+          <div class="chat-composer-box">
+            <div class="chat-composer-input-row">
+              <textarea id="chat-input" class="chat-composer-textarea" rows="1" placeholder="Ask AI Tutor anything about this document..."></textarea>
+              <button type="button" id="chat-send-btn" class="chat-send-btn" title="Send (Enter)">↑</button>
+            </div>
+            <div class="chat-composer-hint">
+              <span>Press Enter to send, Shift+Enter for new line</span>
+              <button type="button" id="chat-clear-btn" class="chat-clear-btn">🗑 Clear Chat</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- VIEW 2: STRUCTURED SUMMARIES -->
+        <div id="ai-summary-view" class="ai-tool-view" hidden>
+          <div class="segmented-mode-bar">
+            <button type="button" class="segmented-mode-btn active" data-summary-type="quick">⚡ Quick (3-Bullet)</button>
+            <button type="button" class="segmented-mode-btn" data-summary-type="detailed">📑 Detailed</button>
+            <button type="button" class="segmented-mode-btn" data-summary-type="takeaways">🎯 Exam Sheet</button>
+          </div>
+          <div id="summary-content" class="document-ai-answer"></div>
+        </div>
+
+      </aside>
+
+    </main>
+
+  </div>
+
+  <!-- =========================================================
+       MODAL 1: LIBRARY PICKER MODAL
+       ========================================================= -->
+
+  <dialog id="modal-library-picker" class="sr-modal" style="max-width: 640px;">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Choose Document from Library</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-library-picker">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: 14px;">
+          <input type="text" id="library-picker-search" placeholder="🔍 Search documents by title or subject..." style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: var(--radius-md); font-size: 14px;">
+        </div>
+
+        <div id="library-picker-loading" style="text-align: center; padding: 24px; color: var(--text-secondary);">
+          Fetching documents from your library...
+        </div>
+
+        <div id="library-picker-empty" style="display: none; text-align: center; padding: 32px 16px; color: var(--text-secondary);">
+          <div style="font-size: 32px; margin-bottom: 8px;">📂</div>
+          <p style="margin: 0; font-weight: 600;">No documents found matching your search.</p>
+        </div>
+
+        <div id="library-picker-list" class="library-picker-grid" style="display: none;">
+          <!-- Dynamically populated cards -->
+        </div>
+
+        <div class="modal-actions" style="margin-top: 20px;">
+          <button type="button" class="btn-sm" data-close-modal="modal-library-picker">Cancel</button>
+          <button type="button" id="btn-open-upload-from-picker" class="btn-sm primary">+ Upload New PDF</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- =========================================================
+       MODAL 2: WORKSPACE QUICK UPLOAD MODAL
+       ========================================================= -->
+
+  <dialog id="modal-workspace-upload" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Upload Document to Workspace</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-workspace-upload">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-workspace-upload">
+          <div class="form-group">
+            <label for="select-workspace-subject">Target Subject (Optional)</label>
+            <select id="select-workspace-subject">
+              <option value="">General / No subject</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="select-workspace-category">Material Category</label>
+            <select id="select-workspace-category" required>
+              <option value="resource">Study Notes / Lecture Resource</option>
+              <option value="pyq">Previous Year Question Paper (PYQ)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="input-workspace-file">Document File (PDF, DOCX, PPTX)</label>
+            <input type="file" id="input-workspace-file" accept=".pdf,.docx,.pptx" required>
+          </div>
+
+          <div id="workspace-upload-status" style="display: none; padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px;"></div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-workspace-upload">Cancel</button>
+            <button type="submit" id="btn-submit-workspace-upload" class="btn-sm primary">Upload & Open Document</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+
+  <!-- =========================================================
+       SCRIPTS
+       ========================================================= -->
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="../../scripts/config.js"></script>
+  <script src="../../scripts/navigation.js"></script>
+  <script src="../../scripts/document-text.js"></script>
+  <script src="../../scripts/read-aloud.js"></script>
+  <script src="pdf-study.js"></script>
+
+</body>
+
+</html>

@@ -1,0 +1,586 @@
+(function () {
+  "use strict";
+
+  const API_BASE_URL = window.API_BASE_URL || "http://127.0.0.1:3000";
+
+let teacherClassrooms = [];
+
+// ============================================================
+// TOAST NOTIFICATIONS
+// ============================================================
+
+function showToast(message, duration = 3500) {
+  const toast = document.getElementById("toast-banner");
+  if (!toast) return;
+  toast.textContent = message;
+  toast.style.display = "block";
+  setTimeout(() => {
+    toast.style.display = "none";
+  }, duration);
+}
+
+// ============================================================
+// MODAL HELPERS
+// ============================================================
+
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (modal && typeof modal.showModal === "function") {
+    modal.showModal();
+  }
+}
+
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  if (modal && typeof modal.close === "function") {
+    modal.close();
+  }
+}
+
+document.querySelectorAll("[data-close-modal]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const targetId = btn.getAttribute("data-close-modal");
+    closeModal(targetId);
+  });
+});
+
+// ============================================================
+// LOAD TEACHER USER & VERIFY ROLE
+// ============================================================
+
+async function loadTeacher() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+      credentials: "include"
+    });
+
+    if (!response.ok) {
+      window.location.href = "../login/index.html";
+      return;
+    }
+
+    const data = await response.json();
+
+    if (!data.user) {
+      window.location.href = "../login/index.html";
+      return;
+    }
+
+    if (data.user.role !== "teacher" && data.user.role !== "admin") {
+      console.warn("Non-teacher user redirected to student dashboard.");
+      window.location.href = "../dashboard/index.html";
+      return;
+    }
+
+    const welcomeEl = document.getElementById("welcome");
+    if (welcomeEl) {
+      welcomeEl.textContent = `Welcome, Prof. ${data.user.name}`;
+    }
+
+    const userNameEl = document.getElementById("user-name");
+    if (userNameEl) {
+      userNameEl.textContent = data.user.name;
+    }
+
+    const userAvatarEl = document.getElementById("user-avatar");
+    if (userAvatarEl) {
+      userAvatarEl.textContent = data.user.name.charAt(0).toUpperCase();
+    }
+
+    await loadClassrooms();
+
+  } catch (error) {
+    console.error("Teacher authentication check failed:", error);
+    window.location.href = "../login/index.html";
+  }
+}
+
+// ============================================================
+// LOAD & RENDER CLASSROOMS
+// ============================================================
+
+async function loadClassrooms() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/classrooms`, {
+      credentials: "include"
+    });
+
+    if (!response.ok) {
+      throw new Error("Unable to fetch classrooms.");
+    }
+
+    const data = await response.json();
+    teacherClassrooms = data.classrooms || [];
+
+    // Calculate aggregated stats
+    let totalSubjects = 0;
+    let totalStudents = 0;
+    let totalResources = 0;
+
+    teacherClassrooms.forEach((c) => {
+      totalSubjects += (c.subjectCount || 0);
+      totalStudents += (c.studentCount || 0);
+      totalResources += (c.resourceCount || 0);
+    });
+
+    document.getElementById("classroom-count").textContent = teacherClassrooms.length;
+    document.getElementById("subject-count").textContent = totalSubjects;
+    document.getElementById("student-count").textContent = totalStudents;
+    document.getElementById("resource-count").textContent = totalResources;
+
+    const emptyState = document.getElementById("classrooms-empty-state");
+    const classroomsList = document.getElementById("classrooms-list");
+
+    if (teacherClassrooms.length === 0) {
+      if (emptyState) emptyState.style.display = "block";
+      if (classroomsList) classroomsList.style.display = "none";
+      return;
+    }
+
+    if (emptyState) emptyState.style.display = "none";
+    if (classroomsList) {
+      classroomsList.style.display = "flex";
+      renderClassroomsList(teacherClassrooms);
+    }
+
+    populateClassroomSelects();
+
+  } catch (error) {
+    console.error("Error loading classrooms:", error);
+  }
+}
+
+function renderClassroomsList(classrooms) {
+  const container = document.getElementById("classrooms-list");
+  if (!container) return;
+
+  container.innerHTML = classrooms.map((c) => {
+    const semInfo = [
+      c.semester ? `Semester ${c.semester}` : "",
+      c.section ? `Section ${c.section}` : ""
+    ].filter(Boolean).join(" · ");
+
+    return `
+      <article class="classroom-card" data-id="${c.id}">
+        <div class="classroom-card-header">
+          <div>
+            <h3 class="classroom-card-title">${escapeHTML(c.name)}</h3>
+            <div class="classroom-card-meta">${escapeHTML(semInfo || "General Section")}</div>
+          </div>
+          <div>
+            <button type="button" class="classroom-code-pill" data-copy-code="${escapeHTML(c.code)}" title="Click to copy join code">
+              <span>Code: ${escapeHTML(c.code)}</span>
+              <span class="copy-icon">📋</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="classroom-stats-row">
+          <div class="classroom-stat-item">
+            <span>👥</span>
+            <span>${c.studentCount} Students</span>
+          </div>
+          <div class="classroom-stat-item">
+            <span>▣</span>
+            <span>${c.subjectCount} Subjects</span>
+          </div>
+          <div class="classroom-stat-item">
+            <span>▤</span>
+            <span>${c.resourceCount} Materials</span>
+          </div>
+        </div>
+
+        <div class="classroom-actions-row">
+          <button type="button" class="btn-sm secondary-button btn-add-subject" data-class-id="${c.id}">
+            <span>+</span> Add Subject
+          </button>
+          <button type="button" class="btn-sm secondary-button btn-upload-mat" data-class-id="${c.id}">
+            <span>↑</span> Upload Material
+          </button>
+          <button type="button" class="btn-sm secondary-button btn-view-roster" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}" data-class-code="${escapeHTML(c.code)}">
+            <span>👥</span> View Roster
+          </button>
+          <button type="button" class="btn-sm primary-button" style="background:#2563eb; margin-left:auto;" onclick="window.location.href='../library/index.html?classroomId=${c.id}'">
+            Open Space →
+          </button>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  connectClassroomCardActions();
+}
+
+function connectClassroomCardActions() {
+  // 1. Copy code buttons
+  document.querySelectorAll("[data-copy-code]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const code = btn.getAttribute("data-copy-code");
+      navigator.clipboard.writeText(code).then(() => {
+        showToast(`Classroom Code '${code}' copied to clipboard! Share with your students.`);
+      }).catch(() => {
+        prompt("Classroom Join Code (copy manually):", code);
+      });
+    });
+  });
+
+  // 2. Add subject buttons
+  document.querySelectorAll(".btn-add-subject").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const classId = btn.getAttribute("data-class-id");
+      const sel = document.getElementById("select-subject-classroom");
+      if (sel) sel.value = classId;
+      openModal("modal-add-subject");
+    });
+  });
+
+  // 3. Upload material buttons
+  document.querySelectorAll(".btn-upload-mat").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const classId = btn.getAttribute("data-class-id");
+      const sel = document.getElementById("select-upload-classroom");
+      if (sel) {
+        sel.value = classId;
+        await loadSubjectsForUpload(classId);
+      }
+      openModal("modal-upload-resource");
+    });
+  });
+
+  // 4. View roster buttons
+  document.querySelectorAll(".btn-view-roster").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const classId = btn.getAttribute("data-class-id");
+      const className = btn.getAttribute("data-class-name");
+      const classCode = btn.getAttribute("data-class-code");
+      openRosterModal(classId, className, classCode);
+    });
+  });
+}
+
+function populateClassroomSelects() {
+  const subjectClassSel = document.getElementById("select-subject-classroom");
+  const uploadClassSel = document.getElementById("select-upload-classroom");
+
+  const options = teacherClassrooms.map((c) =>
+    `<option value="${c.id}">${escapeHTML(c.name)} (${escapeHTML(c.code)})</option>`
+  ).join("");
+
+  if (subjectClassSel) subjectClassSel.innerHTML = options;
+  if (uploadClassSel) {
+    uploadClassSel.innerHTML = options;
+    if (teacherClassrooms.length > 0) {
+      loadSubjectsForUpload(teacherClassrooms[0].id);
+    }
+  }
+}
+
+async function loadSubjectsForUpload(classroomId) {
+  const subjectSel = document.getElementById("select-upload-subject");
+  if (!subjectSel || !classroomId) return;
+
+  subjectSel.innerHTML = "<option>Loading subjects...</option>";
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}`, {
+      credentials: "include"
+    });
+    if (!res.ok) throw new Error("Could not load classroom subjects.");
+
+    const data = await res.json();
+    const subjects = data.subjects || [];
+
+    if (subjects.length === 0) {
+      subjectSel.innerHTML = "<option value=''>No subjects in this classroom yet (create one first)</option>";
+      return;
+    }
+
+    subjectSel.innerHTML = subjects.map((s) =>
+      `<option value="${s.id}">${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`
+    ).join("");
+  } catch (err) {
+    console.error("Error loading subjects for upload:", err);
+    subjectSel.innerHTML = "<option value=''>Failed to load subjects</option>";
+  }
+}
+
+// When classroom selection changes in upload modal:
+const uploadClassSelect = document.getElementById("select-upload-classroom");
+if (uploadClassSelect) {
+  uploadClassSelect.addEventListener("change", (e) => {
+    loadSubjectsForUpload(e.target.value);
+  });
+}
+
+// ============================================================
+// CREATE CLASSROOM FORM
+// ============================================================
+
+const createClassForm = document.getElementById("form-create-classroom");
+if (createClassForm) {
+  createClassForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("input-class-name").value.trim();
+    const semester = document.getElementById("input-class-semester").value.trim();
+    const section = document.getElementById("input-class-section").value.trim();
+    const description = document.getElementById("input-class-desc").value.trim();
+
+    if (!name) return;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classrooms`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, semester, section, description })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.message || "Failed to create classroom.");
+        return;
+      }
+
+      closeModal("modal-create-classroom");
+      createClassForm.reset();
+      showToast(`Classroom created! Share code: ${data.classroom.code}`);
+      await loadClassrooms();
+
+    } catch (err) {
+      console.error("Create classroom error:", err);
+      alert("An error occurred while creating the classroom.");
+    }
+  });
+}
+
+// ============================================================
+// ADD SUBJECT FORM
+// ============================================================
+
+const addSubjectForm = document.getElementById("form-add-subject");
+if (addSubjectForm) {
+  addSubjectForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const classroomId = document.getElementById("select-subject-classroom").value;
+    const name = document.getElementById("input-subject-name").value.trim();
+    const code = document.getElementById("input-subject-code").value.trim();
+    const description = document.getElementById("input-subject-desc").value.trim();
+
+    if (!classroomId || !name) return;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/subjects`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, code, description })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.message || "Failed to add subject.");
+        return;
+      }
+
+      closeModal("modal-add-subject");
+      addSubjectForm.reset();
+      showToast(`Subject '${data.subject.name}' added to classroom!`);
+      await loadClassrooms();
+
+    } catch (err) {
+      console.error("Add subject error:", err);
+      alert("An error occurred while adding the subject.");
+    }
+  });
+}
+
+// ============================================================
+// UPLOAD RESOURCE FORM
+// ============================================================
+
+const uploadResourceForm = document.getElementById("form-upload-resource");
+if (uploadResourceForm) {
+  uploadResourceForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const classroomId = document.getElementById("select-upload-classroom").value;
+    const subjectId = document.getElementById("select-upload-subject").value;
+    const category = document.getElementById("select-upload-category").value;
+    const academicYear = document.getElementById("input-upload-year").value.trim();
+    const fileInput = document.getElementById("input-upload-file");
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+      alert("Please select a file to upload.");
+      return;
+    }
+
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append("pdf", file);
+    if (classroomId) formData.append("classroomId", classroomId);
+    if (subjectId) formData.append("subjectId", subjectId);
+    if (category) formData.append("category", category);
+    if (academicYear) formData.append("academicYear", academicYear);
+
+    const submitBtn = document.getElementById("btn-submit-upload");
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Uploading...";
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/pdfs/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData
+      });
+
+      const data = await res.json();
+
+      if (res.status === 409 && data.duplicate) {
+        if (window.StudyReaderDuplicateUpload) {
+          window.StudyReaderDuplicateUpload.show({
+            pendingUpload: data.pendingUpload,
+            existingPdf: data.existingPdf,
+            onSuccess: async () => {
+              closeModal("modal-upload-resource");
+              uploadResourceForm.reset();
+              showToast("Resource replaced / kept successfully!");
+              await loadClassrooms();
+            },
+            onCancel: () => {
+              console.log("Duplicate upload canceled.");
+            }
+          });
+        } else {
+          alert("A file with this name already exists.");
+        }
+        return;
+      }
+
+      if (!res.ok) {
+        alert(data.message || "Failed to upload file.");
+        return;
+      }
+
+      closeModal("modal-upload-resource");
+      uploadResourceForm.reset();
+      showToast(`Published '${data.pdf.originalFilename}' successfully!`);
+      await loadClassrooms();
+
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert("An error occurred during file upload.");
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Upload & Publish";
+      }
+    }
+  });
+}
+
+// ============================================================
+// ROSTER MODAL
+// ============================================================
+
+async function openRosterModal(classroomId, className, classCode) {
+  document.getElementById("roster-class-name").textContent = `${className} — Enrolled Students`;
+  document.getElementById("roster-class-meta").textContent = `Classroom Code: ${classCode}`;
+  const tbody = document.getElementById("roster-table-body");
+  tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">Loading enrolled students...</td></tr>`;
+
+  openModal("modal-roster");
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}`, {
+      credentials: "include"
+    });
+    if (!res.ok) throw new Error("Could not load roster.");
+
+    const data = await res.json();
+    const students = data.students || [];
+
+    if (students.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary); padding: 24px;">No students have joined this classroom yet. Share the code <strong>${escapeHTML(classCode)}</strong> with your students!</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = students.map((s) => `
+      <tr>
+        <td><strong>${escapeHTML(s.name)}</strong></td>
+        <td style="color: var(--text-secondary);">${escapeHTML(s.email)}</td>
+        <td style="color: var(--text-light);">${formatDate(s.joinedAt)}</td>
+      </tr>
+    `).join("");
+
+  } catch (err) {
+    console.error("Roster error:", err);
+    tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #dc2626;">Failed to load roster.</td></tr>`;
+  }
+}
+
+// ============================================================
+// TOP & QUICK ACTIONS ATTACHMENTS
+// ============================================================
+
+const createClassroomButtons = document.querySelectorAll(
+  "#btn-create-classroom, #create-first-classroom, #quick-create-class, #btn-add-classroom-quick"
+);
+createClassroomButtons.forEach((btn) => {
+  btn.addEventListener("click", () => openModal("modal-create-classroom"));
+});
+
+const uploadResourceButtons = document.querySelectorAll(
+  "#btn-upload-resource, #quick-publish-resource, #quick-upload-pyq"
+);
+uploadResourceButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (teacherClassrooms.length === 0) {
+      alert("Please create a classroom and add a subject first before publishing materials.");
+      openModal("modal-create-classroom");
+      return;
+    }
+    const catSelect = document.getElementById("select-upload-category");
+    if (btn.id === "quick-upload-pyq" && catSelect) {
+      catSelect.value = "pyq";
+    } else if (catSelect) {
+      catSelect.value = "resource";
+    }
+    openModal("modal-upload-resource");
+  });
+});
+
+// ============================================================
+// LOGOUT
+// ============================================================
+
+const logoutBtn = document.getElementById("logout");
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include"
+      });
+      window.location.href = "../login/index.html";
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  });
+}
+
+// Helpers
+function escapeHTML(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+function formatDate(val) {
+  if (!val) return "—";
+  const d = new Date(val);
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
+loadTeacher();
+})();

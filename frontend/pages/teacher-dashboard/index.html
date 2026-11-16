@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyReader — Teacher Dashboard</title>
+  <link rel="stylesheet" href="../../styles/app.css">
+</head>
+
+<body>
+
+  <!-- Toast Notification -->
+  <div id="toast-banner" class="toast-banner"></div>
+
+  <div class="dashboard-layout">
+
+    <!-- ================= SIDEBAR (COLLAPSIBLE DARK THEME) ================= -->
+
+    <aside class="sidebar" id="app-sidebar">
+
+      <div class="sidebar-header">
+        <div class="sidebar-brand">
+          <div class="brand-mark">S</div>
+          <span>StudyReader</span>
+        </div>
+        <button type="button" id="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Toggle Sidebar">
+          ☰
+        </button>
+      </div>
+
+      <nav class="sidebar-nav">
+
+        <a href="index.html" class="nav-item active">
+          <span class="nav-icon">⌂</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+
+        <a href="index.html" class="nav-item" id="nav-classrooms">
+          <span class="nav-icon">🏛</span>
+          <span class="nav-label">My Classrooms</span>
+        </a>
+
+        <a href="../library/index.html" class="nav-item">
+          <span class="nav-icon">▣</span>
+          <span class="nav-label">Subject Resources</span>
+        </a>
+
+        <a href="../pdf-study/index.html" class="nav-item">
+          <span class="nav-icon">▤</span>
+          <span class="nav-label">Document Workspace</span>
+        </a>
+
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button id="logout" class="logout-button">
+          <span class="nav-icon">↪</span>
+          <span class="nav-label">Log out</span>
+        </button>
+      </div>
+
+    </aside>
+
+
+    <!-- ================= MAIN CONTENT ================= -->
+
+    <main class="dashboard-main">
+
+      <!-- TOPBAR -->
+
+      <header class="dashboard-topbar">
+
+        <div class="mobile-brand">
+          <div class="brand-mark">S</div>
+          <strong>StudyReader</strong>
+        </div>
+
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="search" id="topbar-search" placeholder="Search classrooms, subjects or students..." aria-label="Search">
+        </div>
+
+        <div class="topbar-actions">
+
+          <button type="button" class="topbar-icon-btn" aria-label="Notifications">
+            <span>🔔</span>
+            <span class="notification-badge"></span>
+          </button>
+
+          <div class="user-profile">
+            <div class="avatar" id="user-avatar" style="background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);">P</div>
+
+            <div class="user-info">
+              <strong id="user-name">Professor</strong>
+              <span class="teacher-badge">Teacher</span>
+            </div>
+
+            <span class="profile-arrow">⌄</span>
+          </div>
+
+        </div>
+
+      </header>
+
+
+      <!-- DASHBOARD CONTENT -->
+
+      <div class="dashboard-content">
+
+        <!-- WELCOME HERO BANNER (TEACHER VISUAL DIRECTION) -->
+
+        <section class="welcome-section" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border-color: #ddd6fe;">
+
+          <div class="welcome-info">
+            <p class="eyebrow" style="color: #7c3aed;">EDUCATOR DASHBOARD</p>
+            <h1 id="welcome">Welcome, Professor!</h1>
+            <p class="welcome-text">
+              Manage your classrooms, share academic resources, organize subject spaces, and support student learning.
+            </p>
+          </div>
+
+          <div class="welcome-illustration">
+            💻
+          </div>
+
+        </section>
+
+
+        <!-- STATISTICS GRID (4 COLORFUL ROUNDED CARDS) -->
+
+        <section class="stats-grid">
+
+          <article class="stat-card">
+            <div class="stat-icon purple">
+              🏛
+            </div>
+            <div>
+              <span class="stat-label">Classrooms</span>
+              <strong class="stat-value" id="classroom-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon blue">
+              📚
+            </div>
+            <div>
+              <span class="stat-label">Subjects</span>
+              <strong class="stat-value" id="subject-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon green">
+              📄
+            </div>
+            <div>
+              <span class="stat-label">Resources</span>
+              <strong class="stat-value" id="resource-count">0</strong>
+            </div>
+          </article>
+
+          <article class="stat-card">
+            <div class="stat-icon orange">
+              👥
+            </div>
+            <div>
+              <span class="stat-label">Students</span>
+              <strong class="stat-value" id="student-count">0</strong>
+            </div>
+          </article>
+
+        </section>
+
+
+        <!-- MAIN TWO-COLUMN DASHBOARD GRID -->
+
+        <div class="dashboard-grid-layout">
+
+          <!-- LEFT COLUMN: RECENT CLASSROOMS -->
+
+          <section class="dashboard-card">
+
+            <div class="card-header">
+              <div>
+                <h2>Recent Classrooms</h2>
+                <p>Digital classrooms created and managed by you</p>
+              </div>
+
+              <a href="javascript:void(0)" onclick="openModal('modal-create-classroom')" class="view-all-link">
+                + New Classroom →
+              </a>
+            </div>
+
+            <!-- Empty State -->
+            <div class="empty-state" id="classrooms-empty-state">
+              <span class="empty-icon">🏛</span>
+              <h3>No classrooms created yet</h3>
+              <p>Create your first digital classroom space, generate enrollment codes, and invite your students.</p>
+              <div style="margin-top: 16px;">
+                <button type="button" onclick="openModal('modal-create-classroom')" class="action-btn primary" style="width: auto; padding: 10px 20px; margin: 0 auto;">
+                  + Create Your First Classroom
+                </button>
+              </div>
+            </div>
+
+            <!-- Classrooms Container -->
+            <div id="classrooms-list" class="classrooms-container" style="display: none;"></div>
+
+          </section>
+
+
+          <!-- RIGHT COLUMN: QUICK ACTIONS CARD -->
+
+          <aside style="display: flex; flex-direction: column; gap: 24px;">
+
+            <div class="quick-actions-card">
+              <h3>Quick Actions</h3>
+
+              <button type="button" id="btn-create-classroom" class="action-btn primary">
+                <span class="action-btn-icon">🏛</span>
+                <span>Create Classroom</span>
+              </button>
+
+              <button type="button" id="btn-upload-resource" class="action-btn">
+                <span class="action-btn-icon">📤</span>
+                <span>Upload Resource</span>
+              </button>
+
+              <button type="button" id="btn-add-subject" class="action-btn">
+                <span class="action-btn-icon">➕</span>
+                <span>Add Subject</span>
+              </button>
+
+              <button type="button" onclick="window.location.href='../library/index.html'" class="action-btn">
+                <span class="action-btn-icon">📂</span>
+                <span>Browse All Materials</span>
+              </button>
+            </div>
+
+          </aside>
+
+        </div>
+
+      </div>
+
+    </main>
+
+  </div>
+
+
+  <!-- ================= MOBILE BOTTOM NAVIGATION ================= -->
+
+  <nav class="mobile-bottom-nav">
+    <a href="index.html" class="mobile-nav-item active">
+      <span class="mobile-nav-icon">⌂</span>
+      <span>Home</span>
+    </a>
+    <a href="javascript:void(0)" onclick="openModal('modal-create-classroom')" class="mobile-nav-item">
+      <span class="mobile-nav-icon">+</span>
+      <span>Create</span>
+    </a>
+    <a href="../library/index.html" class="mobile-nav-item">
+      <span class="mobile-nav-icon">▣</span>
+      <span>Resources</span>
+    </a>
+    <a href="javascript:void(0)" class="mobile-nav-item" onclick="document.getElementById('logout').click()">
+      <span class="mobile-nav-icon">↪</span>
+      <span>Logout</span>
+    </a>
+  </nav>
+
+
+  <!-- ================= MODALS (PRESERVED WITH ALL IDS) ================= -->
+
+  <!-- Modal: Create Classroom -->
+  <dialog id="modal-create-classroom" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Create New Classroom</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-create-classroom">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-create-classroom">
+          <div class="form-group">
+            <label for="input-class-name">Classroom Title</label>
+            <input type="text" id="input-class-name" placeholder="e.g. Computer Science Engineering" required>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="form-group">
+              <label for="input-class-semester">Semester</label>
+              <input type="text" id="input-class-semester" placeholder="e.g. 5" required>
+            </div>
+            <div class="form-group">
+              <label for="input-class-section">Section (Optional)</label>
+              <input type="text" id="input-class-section" placeholder="e.g. A">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="input-class-desc">Description (Optional)</label>
+            <textarea id="input-class-desc" rows="2" placeholder="Brief notes about this classroom"></textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-create-classroom">Cancel</button>
+            <button type="submit" id="btn-submit-classroom" class="btn-sm primary">Create Classroom</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Upload Material -->
+  <dialog id="modal-upload-resource" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Publish Academic Material</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-upload-resource">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-upload-resource">
+          <div class="form-group">
+            <label for="select-upload-classroom">Classroom</label>
+            <select id="select-upload-classroom" required>
+              <option value="">Select a classroom...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="select-upload-subject">Subject</label>
+            <select id="select-upload-subject" required>
+              <option value="">Select classroom first...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="select-upload-category">Category</label>
+            <select id="select-upload-category" required>
+              <option value="resource">Study Notes / Lecture Slides</option>
+              <option value="pyq">Previous Year Question Paper (PYQ)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="input-upload-file">Document File (PDF, DOCX, PPTX)</label>
+            <input type="file" id="input-upload-file" accept=".pdf,.docx,.pptx" required>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-upload-resource">Cancel</button>
+            <button type="submit" id="btn-submit-upload" class="btn-sm primary">Upload Document</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Add Subject to Classroom -->
+  <dialog id="modal-add-subject" class="sr-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Add Subject to Classroom</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-add-subject">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-add-subject">
+          <div class="form-group">
+            <label for="select-subject-classroom">Target Classroom</label>
+            <select id="select-subject-classroom" required>
+              <option value="">Select a classroom...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="input-subject-name">Subject Name</label>
+            <input type="text" id="input-subject-name" placeholder="e.g. Artificial Intelligence" required>
+          </div>
+          <div class="form-group">
+            <label for="input-subject-code">Subject Code (Optional)</label>
+            <input type="text" id="input-subject-code" placeholder="e.g. CS-501">
+          </div>
+          <div class="form-group">
+            <label for="input-subject-desc">Description (Optional)</label>
+            <textarea id="input-subject-desc" rows="2" placeholder="Course syllabus notes"></textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-add-subject">Cancel</button>
+            <button type="submit" id="btn-submit-subject" class="btn-sm primary">Add Subject</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Student Roster -->
+  <dialog id="modal-roster" class="sr-modal" style="max-width: 600px;">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div>
+          <h3 id="roster-class-name">Enrolled Students</h3>
+          <span id="roster-class-code" style="font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono);"></span>
+        </div>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-roster">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
+        <div id="roster-empty" class="empty-state" style="padding: 20px 0; display: none;">
+          <p>No students have joined this classroom yet. Share the code to invite students!</p>
+        </div>
+        <table id="roster-table" class="roster-table" style="display: none;">
+          <thead>
+            <tr>
+              <th>Student Name</th>
+              <th>Email</th>
+              <th>Joined Date</th>
+            </tr>
+          </thead>
+          <tbody id="roster-students-list"></tbody>
+        </table>
+      </div>
+      <div class="modal-actions" style="padding: 14px 24px; border-top: 1px solid var(--border);">
+        <button type="button" class="btn-sm primary" data-close-modal="modal-roster">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Scripts -->
+  <script src="../../scripts/config.js"></script>
+  <script src="../../scripts/navigation.js"></script>
+  <script src="../../scripts/duplicate-upload.js"></script>
+  <script src="teacher-dashboard.js"></script>
+
+</body>
+
+</html>

@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "routes": [
+    {
+      "src": "^/$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/login/index.html" }
+    },
+    {
+      "src": "^/login/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/login/index.html" }
+    },
+    {
+      "src": "^/signup/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/signup/index.html" }
+    },
+    {
+      "src": "^/dashboard/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/dashboard/index.html" }
+    },
+    {
+      "src": "^/teacher-dashboard/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/teacher-dashboard/index.html" }
+    },
+    {
+      "src": "^/library/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/library/index.html" }
+    },
+    {
+      "src": "^/pdf-study/?$",
+      "status": 307,
+      "headers": { "Location": "/frontend/pages/pdf-study/index.html" }
+    },
+    {
+      "src": "^/(.*)",
+      "dest": "/$1"
+    }
+  ]
+}

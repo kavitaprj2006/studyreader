@@ -1,0 +1,3426 @@
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") });
+
+const express = require("express");
+const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const { Pool } = require("pg");
+const bcrypt = require("bcrypt");
+const cors = require("cors");
+const multer = require("multer");
+const fs = require("fs");
+const os = require("os");
+const officeParser = require("officeparser");
+const piperTtsProvider =
+  require("./services/tts/piper-tts-provider");
+const ragService =
+  require("./services/ai/rag-service");
+
+const app = express();
+
+// Trust reverse proxy (Render, Vercel, Cloudflare SSL termination)
+app.set("trust proxy", 1);
+
+const isProduction = process.env.NODE_ENV === "production";
+
+// Configure Allowed Origins for CORS
+const configuredOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
+  : [];
+
+if (process.env.FRONTEND_URL) {
+  configuredOrigins.push(process.env.FRONTEND_URL.trim());
+}
+
+const defaultDevOrigins = [
+  "http://127.0.0.1:5500",
+  "http://localhost:5500",
+  "http://127.0.0.1:3000",
+  "http://localhost:3000"
+];
+
+const allowedOrigins = [...new Set([...configuredOrigins, ...defaultDevOrigins])];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    // Exact match in allowed list
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    try {
+      const url = new URL(origin);
+      // Allow any *.vercel.app preview or production deployment
+      if (url.hostname.endsWith(".vercel.app")) {
+        return callback(null, true);
+      }
+      // Allow any *.onrender.com deployment (self)
+      if (url.hostname.endsWith(".onrender.com")) {
+        return callback(null, true);
+      }
+    } catch (_) {}
+    console.warn(`Blocked by CORS: ${origin}`);
+    return callback(new Error(`CORS: Origin ${origin} not allowed`));
+  },
+  credentials: true
+}));
+
+const PORT = process.env.PORT || 3000;
+
+// ============================================================
+// PDF UPLOAD CONFIGURATION
+// ============================================================
+
+const uploadDir = path.join(__dirname, "uploads");
+const uploadStagingDir =
+  path.join(os.tmpdir(), "studyreader-pending-uploads");
+
+fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(uploadStagingDir, { recursive: true });
+
+app.use("/uploads", express.static(uploadDir));
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadStagingDir);
+  },
+
+  filename: function (req, file, cb) {
+    const uniqueName =
+      `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+
+  limits: {
+    fileSize: 20 * 1024 * 1024
+  },
+
+  fileFilter: function (req, file, cb) {
+
+    const allowedExtensions = [
+      ".pdf",
+      ".docx",
+      ".pptx"
+    ];
+
+    const extension =
+      path.extname(file.originalname).toLowerCase();
+
+    if (allowedExtensions.includes(extension)) {
+      cb(null, true);
+    } else {
+      cb(
+        new Error(
+          "Only PDF, DOCX and PPTX files are allowed."
+        )
+      );
+    }
+  }
+});
+// ============================================================
+// PostgreSQL Connection Pool (Supports Neon & Local DB)
+// ============================================================
+
+const useSsl = Boolean(
+  process.env.DATABASE_URL ||
+  process.env.DB_SSL === "true" ||
+  (isProduction && !process.env.DB_HOST?.includes("localhost") && !process.env.DB_HOST?.includes("127.0.0.1"))
+);
+
+const poolConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    }
+  : {
+      host: process.env.DB_HOST || "localhost",
+      port: Number(process.env.DB_PORT) || 5432,
+      database: process.env.DB_NAME || "studyreader",
+      user: process.env.DB_USER || "postgres",
+      password: process.env.DB_PASSWORD,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    };
+
+const pool = new Pool(poolConfig);
+
+// Log unexpected database errors
+pool.on("error", (err) => {
+  console.error("Unexpected PostgreSQL pool error:", err);
+});
+
+// ============================================================
+// Middleware
+// ============================================================
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+// ============================================================
+// Session
+// ============================================================
+
+app.use(
+  session({
+    store: new pgSession({
+      pool: pool,
+      tableName: "sessions",
+    }),
+
+    secret: process.env.SESSION_SECRET || "studyreader-production-session-secret-k281x",
+
+    resave: false,
+
+    saveUninitialized: false,
+
+    cookie: {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    },
+  })
+);
+
+// ============================================================
+// Basic Routes
+// ============================================================
+
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "StudyReader backend is running.",
+  });
+});
+
+app.get("/api/health", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW() AS current_time");
+
+    res.json({
+      success: true,
+      server: "online",
+      database: "connected",
+      time: result.rows[0].current_time,
+    });
+  } catch (error) {
+    console.error("Database health check failed:", error);
+
+    res.status(500).json({
+      success: false,
+      server: "online",
+      database: "disconnected",
+    });
+  }
+});
+
+app.get("/api/session-test", (req, res) => {
+  if (!req.session.visitCount) {
+    req.session.visitCount = 0;
+  }
+
+  req.session.visitCount += 1;
+
+  res.json({
+    success: true,
+    message: "Session is working.",
+    visitCount: req.session.visitCount,
+    sessionIdExists: Boolean(req.sessionID),
+  });
+});
+
+// ===============================
+// AUTHENTICATION — SIGNUP
+// ===============================
+
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    const { name, email, password, role = "student" } = req.body;
+
+    // 1. Basic validation
+    if (
+      typeof name !== "string" ||
+      typeof email !== "string" ||
+      typeof password !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, email and password are required."
+      });
+    }
+
+    // 2. Normalize input
+    const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+    const normalizedRole = String(role || "student").trim().toLowerCase();
+
+    // 3. Validate name
+    if (cleanName.length < 2 || cleanName.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Name must be between 2 and 100 characters."
+      });
+    }
+
+    // 4. Validate email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailRegex.test(cleanEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a valid email address."
+      });
+    }
+
+    // 5. Validate password
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters long."
+      });
+    }
+
+    // 6. Validate role (Public registration strictly allows only student or teacher)
+    const allowedRoles = ["student", "teacher"];
+    if (!allowedRoles.includes(normalizedRole)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid role specified. Public registration only allows 'student' or 'teacher'."
+      });
+    }
+
+    const isApproved = true;
+
+    // 7. Check whether email already exists
+    const existingUser = await pool.query(
+      `SELECT id FROM users WHERE email = $1 LIMIT 1`,
+      [cleanEmail]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email already exists."
+      });
+    }
+
+    // 8. Hash password
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // 9. Create user with role and approval status
+    const result = await pool.query(
+      `
+      INSERT INTO users
+        (name, email, password_hash, role, is_active, is_approved)
+      VALUES
+        ($1, $2, $3, $4, TRUE, $5)
+      RETURNING
+        id,
+        name,
+        email,
+        role,
+        is_approved,
+        created_at
+      `,
+      [cleanName, cleanEmail, passwordHash, normalizedRole, isApproved]
+    );
+
+    const user = result.rows[0];
+
+    // 10. Create authenticated session
+    req.session.userId = user.id;
+    req.session.userRole = user.role;
+
+    // 11. Return safe user information
+    return res.status(201).json({
+      success: true,
+      message: "Account created successfully.",
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isApproved: user.is_approved,
+        createdAt: user.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Signup error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create account. Please try again later."
+    });
+  }
+});
+
+// ============================================================
+// AUTHENTICATION — LOGIN
+// ============================================================
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // 1. Basic validation
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required."
+      });
+    }
+
+    // 2. Normalize email
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 3. Find user
+    const result = await pool.query(
+      `SELECT
+        id,
+        name,
+        email,
+        password_hash,
+        role,
+        is_active,
+        is_approved
+       FROM users
+       WHERE email = $1
+       LIMIT 1`,
+      [cleanEmail]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password."
+      });
+    }
+
+    const user = result.rows[0];
+
+    // 4. Check whether account is active
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive."
+      });
+    }
+
+    // 5. Check whether account is approved (for teachers)
+    if (!user.is_approved) {
+      return res.status(403).json({
+        success: false,
+        message: "Your teacher account is pending administrative approval."
+      });
+    }
+
+    // 6. Verify password
+    const passwordMatch = await bcrypt.compare(
+      password,
+      user.password_hash
+    );
+
+    if (!passwordMatch) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password."
+      });
+    }
+
+    // 7. Update last login
+    await pool.query(
+      `UPDATE users
+       SET last_login = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [user.id]
+    );
+
+    // 8. Create authenticated session
+    req.session.userId = user.id;
+    req.session.userRole = user.role;
+
+    // 9. Return safe user information
+    return res.status(200).json({
+      success: true,
+      message: "Login successful.",
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isApproved: user.is_approved
+      }
+    });
+
+  } catch (error) {
+    console.error("Login error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to login. Please try again later."
+    });
+  }
+});
+
+// ============================================================
+// AUTHENTICATION — CURRENT USER
+// ============================================================
+
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    // Check whether the user has a session
+    if (!req.session.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Not authenticated."
+      });
+    }
+
+    // Get the logged-in user
+    const result = await pool.query(
+      `SELECT
+        id,
+        name,
+        email,
+        role,
+        is_active,
+        is_approved,
+        created_at,
+        last_login
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [req.session.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "User account not found."
+      });
+    }
+
+    const user = result.rows[0];
+
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive."
+      });
+    }
+
+    if (!user.is_approved) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is pending administrative approval."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      authenticated: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isApproved: user.is_approved,
+        createdAt: user.created_at,
+        lastLogin: user.last_login
+      }
+    });
+
+  } catch (error) {
+    console.error("Current user error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve user information."
+    });
+  }
+});
+
+// ============================================================
+// PROTECTED TEST ROUTE
+// ============================================================
+
+app.get("/api/protected-test", requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    message: "You are authenticated.",
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role
+    }
+  });
+});
+
+// ============================================================
+// ROLE-PROTECTED TEST ROUTES (FOR VERIFICATION)
+// ============================================================
+
+app.get("/api/auth/student-only", requireAuth, requireRole(["student", "admin"]), (req, res) => {
+  res.json({
+    success: true,
+    message: "Authorized: Student space.",
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    }
+  });
+});
+
+app.get("/api/auth/teacher-only", requireAuth, requireRole(["teacher", "admin"]), (req, res) => {
+  res.json({
+    success: true,
+    message: "Authorized: Teacher workspace.",
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    }
+  });
+});
+
+app.get("/api/auth/admin-only", requireAuth, requireRole(["admin"]), (req, res) => {
+  res.json({
+    success: true,
+    message: "Authorized: Admin control center.",
+    user: {
+      id: req.user.id,
+      name: req.user.name,
+      role: req.user.role
+    }
+  });
+});
+
+// ============================================================
+// AUTHENTICATION — LOGOUT
+// ============================================================
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy((error) => {
+    if (error) {
+      console.error("Logout error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to logout. Please try again."
+      });
+    }
+
+    res.clearCookie("connect.sid", {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax"
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Logout successful."
+    });
+  });
+});
+
+// ============================================================
+// AUTHENTICATION & ROLE MIDDLEWARES
+// ============================================================
+
+async function requireAuth(req, res, next) {
+  try {
+    if (!req.session.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required."
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT id, name, email, role, is_active, is_approved
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [req.session.userId]
+    );
+
+    if (result.rows.length === 0) {
+      req.session.destroy(() => { });
+
+      return res.status(401).json({
+        success: false,
+        message: "User session is no longer valid."
+      });
+    }
+
+    const user = result.rows[0];
+
+    if (!user.is_active) {
+      req.session.destroy(() => { });
+
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive."
+      });
+    }
+
+    if (!user.is_approved) {
+      req.session.destroy(() => { });
+
+      return res.status(403).json({
+        success: false,
+        message: "Your account is pending administrative approval."
+      });
+    }
+
+    req.user = user;
+
+    next();
+
+  } catch (error) {
+    console.error("Authentication middleware error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to verify authentication."
+    });
+  }
+}
+
+function requireRole(allowedRoles) {
+  const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: `Forbidden: Access requires one of the following roles: [${roles.join(", ")}]. Your current role is '${req.user ? req.user.role : "unauthenticated"}'.`
+      });
+    }
+
+    next();
+  };
+}
+
+// ============================================================
+// CLASSROOM CODE GENERATOR & ACCESS HELPERS
+// ============================================================
+
+function generateClassroomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+async function canAccessDocument(pdfId, userId, userRole) {
+  if (userRole === "admin") {
+    const res = await pool.query(
+      "SELECT p.*, u.name as uploader_name, u.role as uploader_role FROM pdfs p JOIN users u ON p.user_id = u.id WHERE p.id = $1 LIMIT 1",
+      [pdfId]
+    );
+    return res.rows[0] || null;
+  }
+
+  const query = `
+    SELECT p.*, u.name as uploader_name, u.role as uploader_role
+    FROM pdfs p
+    JOIN users u ON p.user_id = u.id
+    WHERE p.id = $1
+      AND (
+        p.user_id = $2
+        OR (
+          p.access_scope = 'classroom'
+          AND p.classroom_id IS NOT NULL
+          AND (
+            EXISTS (
+              SELECT 1 FROM classroom_members cm 
+              WHERE cm.classroom_id = p.classroom_id AND cm.student_id = $2
+            )
+            OR EXISTS (
+              SELECT 1 FROM classrooms c 
+              WHERE c.id = p.classroom_id AND c.teacher_id = $2
+            )
+          )
+        )
+      )
+    LIMIT 1
+  `;
+  const result = await pool.query(query, [pdfId, userId]);
+  return result.rows[0] || null;
+}
+
+// pdf,docx formatchng============================================================
+function getFileType(filename) {
+
+  const extension =
+    path.extname(filename).toLowerCase();
+
+  switch (extension) {
+
+    case ".pdf":
+      return "pdf";
+
+    case ".docx":
+      return "docx";
+
+    case ".pptx":
+      return "pptx";
+
+    default:
+      return null;
+
+  }
+
+}
+
+// ============================================================
+// COMMON DOCUMENT EXTRACTION HELPERS
+// ============================================================
+
+function isSafeUploadFilename(filename) {
+  return (
+    typeof filename === "string" &&
+    filename.length > 0 &&
+    path.basename(filename) === filename
+  );
+}
+
+function countWords(text) {
+  const normalizedText =
+    String(text || "").trim();
+
+  if (!normalizedText) {
+    return 0;
+  }
+
+  return normalizedText
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
+}
+
+function moveFile(source, destination) {
+  if (fs.existsSync(destination)) {
+    throw new Error("A file with the generated upload name already exists.");
+  }
+
+  try {
+    fs.renameSync(source, destination);
+  } catch (error) {
+    if (error.code !== "EXDEV") {
+      throw error;
+    }
+
+    fs.copyFileSync(
+      source,
+      destination,
+      fs.constants.COPYFILE_EXCL
+    );
+
+    try {
+      fs.unlinkSync(source);
+    } catch (error) {
+      fs.unlinkSync(destination);
+      throw error;
+    }
+  }
+}
+
+function getPendingUpload(req, filename) {
+  if (
+    typeof filename !== "string" ||
+    path.basename(filename) !== filename
+  ) {
+    return null;
+  }
+
+  const pendingUpload =
+    req.session.pendingUploads?.[filename];
+
+  if (
+    !pendingUpload ||
+    pendingUpload.filename !== filename ||
+    String(pendingUpload.userId) !== String(req.user.id)
+  ) {
+    return null;
+  }
+
+  const filePath =
+    path.resolve(uploadStagingDir, filename);
+
+  if (
+    path.dirname(filePath) !==
+    path.resolve(uploadStagingDir)
+  ) {
+    return null;
+  }
+
+  return {
+    ...pendingUpload,
+    filePath
+  };
+}
+
+function clearPendingUpload(req, filename) {
+  delete req.session.pendingUploads[filename];
+
+  if (
+    Object.keys(req.session.pendingUploads).length === 0
+  ) {
+    delete req.session.pendingUploads;
+  }
+}
+
+// ============================================================
+// PDF UPLOAD
+// ============================================================
+
+// ============================================================
+// PDF UPLOAD
+// Handles:
+// 1. New PDF
+// 2. Duplicate filename
+// 3. Replace existing
+// 4. Keep both
+// ============================================================
+
+app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
+  let finalFilePath = null;
+  let fileMovedToPublicDirectory = false;
+  let fileSavedInDatabase = false;
+
+  try {
+    // ----------------------------------------------------------
+    // USER MUST BE LOGGED IN
+    // ----------------------------------------------------------
+
+    if (!req.session.userId) {
+      if (req.file) {
+        fs.unlinkSync(req.file.path);
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: "You must be logged in to upload a PDF."
+      });
+    }
+
+    // ----------------------------------------------------------
+    // CHECK FILE
+    // ----------------------------------------------------------
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a supported file."
+      });
+    }
+
+    const userId = req.session.userId;
+    const originalFilename = req.file.originalname;
+    const fileType =
+      getFileType(
+        req.file.originalname
+      );
+
+    const subjectId = req.body.subjectId || req.body.subject_id || null;
+    const classroomId = req.body.classroomId || req.body.classroom_id || null;
+    const category = req.body.category === "pyq" ? "pyq" : "resource";
+    const academicYear = req.body.academicYear || req.body.academic_year || null;
+    const semester = req.body.semester || null;
+    const accessScope = classroomId ? "classroom" : "private";
+
+    if (!fileType) {
+
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Unsupported file format."
+      });
+
+    }
+    // ----------------------------------------------------------
+    // CHECK WHETHER SAME FILENAME ALREADY EXISTS
+    // FOR THIS USER ONLY
+    // ----------------------------------------------------------
+
+    const existingResult = await pool.query(
+      `
+      SELECT
+        id,
+        filename,
+        original_filename,
+        file_url,
+        file_size,
+        processing_status,
+        created_at
+      FROM pdfs
+      WHERE user_id = $1
+        AND LOWER(original_filename) = LOWER($2)
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [userId, originalFilename]
+    );
+
+    // ----------------------------------------------------------
+    // DUPLICATE FOUND
+    // ----------------------------------------------------------
+
+    if (existingResult.rows.length > 0) {
+      const existingPdf = existingResult.rows[0];
+
+      if (!req.session.pendingUploads) {
+        req.session.pendingUploads = {};
+      }
+
+      req.session.pendingUploads[req.file.filename] = {
+        filename: req.file.filename,
+        originalFilename: req.file.originalname,
+        fileSize: req.file.size,
+        userId,
+        subjectId,
+        classroomId,
+        category,
+        academicYear,
+        semester,
+        accessScope
+      };
+
+      await new Promise((resolve, reject) => {
+        req.session.save((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
+
+      // Keep the newly uploaded file temporarily.
+      // The user will decide whether to:
+      // 1. Cancel
+      // 2. Keep Both
+      // 3. Replace Existing
+
+      return res.status(409).json({
+        success: false,
+        duplicate: true,
+        message: "A PDF with this filename already exists.",
+        pendingUpload: {
+          filename: req.file.filename,
+          originalFilename: req.file.originalname,
+          fileSize: req.file.size
+        },
+        existingPdf: {
+          id: existingPdf.id,
+          originalFilename: existingPdf.original_filename,
+          fileSize: existingPdf.file_size,
+          processingStatus: existingPdf.processing_status,
+          createdAt: existingPdf.created_at
+        }
+      });
+    }
+    // ----------------------------------------------------------
+    // NO DUPLICATE
+    // SAVE NEW PDF
+    // ----------------------------------------------------------
+
+    finalFilePath =
+      path.join(uploadDir, req.file.filename);
+    moveFile(req.file.path, finalFilePath);
+    fileMovedToPublicDirectory = true;
+
+    const result = await pool.query(
+      `
+      INSERT INTO pdfs
+        (
+          user_id,
+          filename,
+          original_filename,
+          file_url,
+          file_size,
+          processing_status,
+          classroom_id,
+          subject_id,
+          category,
+          academic_year,
+          semester,
+          access_scope
+        )
+      VALUES
+        ($1, $2, $3, $4, $5, 'uploaded', $6, $7, $8, $9, $10, $11)
+      RETURNING
+        id,
+        filename,
+        original_filename,
+        file_url,
+        file_size,
+        page_count,
+        processing_status,
+        classroom_id,
+        subject_id,
+        category,
+        academic_year,
+        semester,
+        access_scope,
+        created_at
+      `,
+      [
+        userId,
+        req.file.filename,
+        req.file.originalname,
+        `/uploads/${req.file.filename}`,
+        req.file.size,
+        classroomId ? Number(classroomId) : null,
+        subjectId ? Number(subjectId) : null,
+        category,
+        academicYear,
+        semester,
+        accessScope
+      ]
+    );
+
+    const pdf = result.rows[0];
+    fileSavedInDatabase = true;
+
+    return res.status(201).json({
+      success: true,
+      duplicate: false,
+      message: "Resource uploaded successfully.",
+      pdf: {
+        id: pdf.id,
+        filename: pdf.filename,
+        originalFilename: pdf.original_filename,
+        fileUrl: pdf.file_url,
+        fileSize: pdf.file_size,
+        fileType: getFileType(pdf.original_filename || pdf.filename),
+        pageCount: pdf.page_count,
+        processingStatus: pdf.processing_status,
+        classroomId: pdf.classroom_id,
+        subjectId: pdf.subject_id,
+        category: pdf.category,
+        academicYear: pdf.academic_year,
+        semester: pdf.semester,
+        accessScope: pdf.access_scope,
+        createdAt: pdf.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("PDF upload error:", error);
+
+    // ----------------------------------------------------------
+    // REMOVE UPLOADED FILE IF SOMETHING FAILED
+    // ----------------------------------------------------------
+
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    if (
+      fileMovedToPublicDirectory &&
+      !fileSavedInDatabase &&
+      finalFilePath &&
+      fs.existsSync(finalFilePath)
+    ) {
+      fs.unlinkSync(finalFilePath);
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to upload PDF."
+    });
+  }
+});
+
+// ============================================================
+// DUPLICATE PDF — CANCEL
+// ============================================================
+
+app.post("/api/pdfs/duplicate/cancel", requireAuth, async (req, res) => {
+  try {
+    const { filename } = req.body;
+
+    if (typeof filename !== "string" || !filename) {
+      return res.status(400).json({
+        success: false,
+        message: "Pending upload filename is required."
+      });
+    }
+
+    const pendingUpload =
+      getPendingUpload(req, filename);
+
+    if (!pendingUpload) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending upload was not found."
+      });
+    }
+
+    if (fs.existsSync(pendingUpload.filePath)) {
+      fs.unlinkSync(pendingUpload.filePath);
+    }
+
+    clearPendingUpload(req, filename);
+
+    return res.status(200).json({
+      success: true,
+      message: "Duplicate upload cancelled."
+    });
+
+  } catch (error) {
+    console.error("Cancel duplicate upload error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to cancel duplicate upload."
+    });
+  }
+});
+
+
+// ============================================================
+// DUPLICATE PDF — KEEP BOTH
+// ============================================================
+
+app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
+  try {
+    const { filename } = req.body;
+
+    if (typeof filename !== "string" || !filename) {
+      return res.status(400).json({
+        success: false,
+        message: "Pending upload information is required."
+      });
+    }
+
+    const pendingUpload =
+      getPendingUpload(req, filename);
+
+    if (
+      !pendingUpload ||
+      !fs.existsSync(pendingUpload.filePath)
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending uploaded file was not found."
+      });
+    }
+
+    const userId = req.user.id;
+    const publicFilePath =
+      path.join(uploadDir, pendingUpload.filename);
+
+    moveFile(
+      pendingUpload.filePath,
+      publicFilePath
+    );
+
+    let result;
+
+    try {
+      result = await pool.query(
+        `
+      INSERT INTO pdfs
+        (
+          user_id,
+          filename,
+          original_filename,
+          file_url,
+          file_size,
+          processing_status,
+          classroom_id,
+          subject_id,
+          category,
+          academic_year,
+          semester,
+          access_scope
+        )
+      VALUES
+        ($1, $2, $3, $4, $5, 'uploaded', $6, $7, $8, $9, $10, $11)
+      RETURNING
+        id,
+        filename,
+        original_filename,
+        file_url,
+        file_size,
+        page_count,
+        processing_status,
+        classroom_id,
+        subject_id,
+        category,
+        academic_year,
+        semester,
+        access_scope,
+        created_at
+      `,
+        [
+          userId,
+          pendingUpload.filename,
+          pendingUpload.originalFilename,
+          `/uploads/${pendingUpload.filename}`,
+          pendingUpload.fileSize,
+          pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
+          pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
+          pendingUpload.category || 'resource',
+          pendingUpload.academicYear || null,
+          pendingUpload.semester || null,
+          pendingUpload.accessScope || (pendingUpload.classroomId ? 'classroom' : 'private')
+        ]
+      );
+    } catch (error) {
+      moveFile(
+        publicFilePath,
+        pendingUpload.filePath
+      );
+      throw error;
+    }
+
+    const pdf = result.rows[0];
+    clearPendingUpload(req, filename);
+
+    return res.status(201).json({
+      success: true,
+      message: "Both PDFs have been kept.",
+      pdf: {
+        id: pdf.id,
+        filename: pdf.filename,
+        originalFilename: pdf.original_filename,
+        fileUrl: pdf.file_url,
+        fileSize: pdf.file_size,
+        fileType: getFileType(pdf.original_filename || pdf.filename),
+        pageCount: pdf.page_count,
+        processingStatus: pdf.processing_status,
+        classroomId: pdf.classroom_id,
+        subjectId: pdf.subject_id,
+        category: pdf.category,
+        createdAt: pdf.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Keep both duplicate error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to keep both PDFs."
+    });
+  }
+});
+
+
+// ============================================================
+// DUPLICATE PDF — REPLACE EXISTING
+// ============================================================
+
+app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
+  try {
+    const {
+      filename,
+      existingPdfId
+    } = req.body;
+
+    if (
+      typeof filename !== "string" ||
+      !filename ||
+      !existingPdfId
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Replacement information is required."
+      });
+    }
+
+    const pendingUpload =
+      getPendingUpload(req, filename);
+
+    if (
+      !pendingUpload ||
+      !fs.existsSync(pendingUpload.filePath)
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "Pending uploaded file was not found."
+      });
+    }
+
+    const userId = req.user.id;
+
+    // Verify that the existing PDF belongs to this user.
+    const existingResult = await pool.query(
+      `
+      SELECT filename
+      FROM pdfs
+      WHERE id = $1
+        AND user_id = $2
+      LIMIT 1
+      `,
+      [existingPdfId, userId]
+    );
+
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Existing PDF was not found."
+      });
+    }
+
+    const oldFilename = existingResult.rows[0].filename;
+    const oldFilePath = path.join(uploadDir, oldFilename);
+
+    const publicFilePath =
+      path.join(uploadDir, pendingUpload.filename);
+
+    moveFile(
+      pendingUpload.filePath,
+      publicFilePath
+    );
+
+    let result;
+
+    try {
+      result = await pool.query(
+        `
+      UPDATE pdfs
+      SET
+        filename = $1,
+        original_filename = $2,
+        file_url = $3,
+        file_size = $4,
+        processing_status = 'uploaded',
+        classroom_id = $5,
+        subject_id = $6,
+        category = $7,
+        academic_year = $8,
+        semester = $9,
+        access_scope = $10,
+        page_count = NULL,
+        processing_error = NULL
+      WHERE id = $11
+        AND user_id = $12
+      RETURNING
+        id,
+        filename,
+        original_filename,
+        file_url,
+        file_size,
+        page_count,
+        processing_status,
+        classroom_id,
+        subject_id,
+        category,
+        academic_year,
+        semester,
+        access_scope,
+        created_at
+      `,
+        [
+          pendingUpload.filename,
+          pendingUpload.originalFilename,
+          `/uploads/${pendingUpload.filename}`,
+          pendingUpload.fileSize,
+          pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
+          pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
+          pendingUpload.category || 'resource',
+          pendingUpload.academicYear || null,
+          pendingUpload.semester || null,
+          pendingUpload.accessScope || (pendingUpload.classroomId ? 'classroom' : 'private'),
+          existingPdfId,
+          userId
+        ]
+      );
+    } catch (error) {
+      moveFile(
+        publicFilePath,
+        pendingUpload.filePath
+      );
+      throw error;
+    }
+
+    // Delete old physical file after database replacement.
+    if (
+      oldFilename &&
+      oldFilename !== pendingUpload.filename &&
+      fs.existsSync(oldFilePath)
+    ) {
+      try {
+        fs.unlinkSync(oldFilePath);
+      } catch (error) {
+        console.error("Could not remove replaced PDF file:", error);
+      }
+    }
+
+    const pdf = result.rows[0];
+    clearPendingUpload(req, filename);
+
+    return res.status(200).json({
+      success: true,
+      message: "Existing PDF replaced successfully.",
+      pdf: {
+        id: pdf.id,
+        filename: pdf.filename,
+        originalFilename: pdf.original_filename,
+        fileUrl: pdf.file_url,
+        fileSize: pdf.file_size,
+        fileType: getFileType(pdf.original_filename || pdf.filename),
+        pageCount: pdf.page_count,
+        processingStatus: pdf.processing_status,
+        classroomId: pdf.classroom_id,
+        subjectId: pdf.subject_id,
+        category: pdf.category,
+        createdAt: pdf.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Replace duplicate error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to replace existing PDF."
+    });
+  }
+});
+
+// ============================================================
+// GET USER PDFs (PERSONAL & ENROLLED CLASSROOM MATERIALS)
+// ============================================================
+
+app.get("/api/pdfs", requireAuth, async (req, res) => {
+  try {
+    const { subjectId, classroomId, category } = req.query;
+    let query = `
+      SELECT
+        p.id,
+        p.user_id,
+        p.filename,
+        p.original_filename,
+        p.file_url,
+        p.file_size,
+        p.page_count,
+        p.processing_status,
+        p.category,
+        p.academic_year,
+        p.semester,
+        p.classroom_id,
+        p.subject_id,
+        p.access_scope,
+        p.created_at,
+        u.name as uploader_name,
+        u.role as uploader_role,
+        s.name as subject_name,
+        c.name as classroom_name
+      FROM pdfs p
+      JOIN users u ON p.user_id = u.id
+      LEFT JOIN subjects s ON p.subject_id = s.id
+      LEFT JOIN classrooms c ON p.classroom_id = c.id
+      WHERE (
+        p.user_id = $1
+        OR (
+          p.access_scope = 'classroom'
+          AND p.classroom_id IS NOT NULL
+          AND (
+            EXISTS (
+              SELECT 1 FROM classroom_members cm 
+              WHERE cm.classroom_id = p.classroom_id AND cm.student_id = $1
+            )
+            OR EXISTS (
+              SELECT 1 FROM classrooms cl 
+              WHERE cl.id = p.classroom_id AND cl.teacher_id = $1
+            )
+          )
+        )
+      )
+    `;
+    const params = [req.user.id];
+
+    if (subjectId) {
+      params.push(Number(subjectId));
+      query += ` AND p.subject_id = $${params.length}`;
+    }
+    if (classroomId) {
+      params.push(Number(classroomId));
+      query += ` AND p.classroom_id = $${params.length}`;
+    }
+    if (category) {
+      params.push(category);
+      query += ` AND p.category = $${params.length}`;
+    }
+
+    query += ` ORDER BY p.created_at DESC`;
+
+    const result = await pool.query(query, params);
+
+    return res.status(200).json({
+      success: true,
+      pdfs: result.rows.map((pdf) => ({
+        id: pdf.id,
+        filename: pdf.filename,
+        originalFilename: pdf.original_filename,
+        fileUrl: pdf.file_url,
+        fileSize: pdf.file_size,
+        fileType: getFileType(pdf.original_filename || pdf.filename),
+        pageCount: pdf.page_count,
+        processingStatus: pdf.processing_status,
+        category: pdf.category || "resource",
+        academicYear: pdf.academic_year,
+        semester: pdf.semester,
+        classroomId: pdf.classroom_id ? Number(pdf.classroom_id) : null,
+        classroomName: pdf.classroom_name,
+        subjectId: pdf.subject_id ? Number(pdf.subject_id) : null,
+        subjectName: pdf.subject_name,
+        accessScope: pdf.access_scope,
+        uploadedBy: {
+          name: pdf.uploader_name,
+          role: pdf.uploader_role,
+          isMe: String(pdf.user_id) === String(req.user.id)
+        },
+        createdAt: pdf.created_at
+      }))
+    });
+
+  } catch (error) {
+    console.error("Get PDFs error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve PDFs."
+    });
+  }
+});
+
+// ============================================================
+// GET SINGLE PDF BY ID
+// ============================================================
+
+app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    let classroomName = null;
+    let subjectName = null;
+
+    if (document.classroom_id) {
+      const cRes = await pool.query("SELECT name FROM classrooms WHERE id = $1", [document.classroom_id]);
+      if (cRes.rows.length) classroomName = cRes.rows[0].name;
+    }
+    if (document.subject_id) {
+      const sRes = await pool.query("SELECT name FROM subjects WHERE id = $1", [document.subject_id]);
+      if (sRes.rows.length) subjectName = sRes.rows[0].name;
+    }
+
+    return res.status(200).json({
+      success: true,
+      pdf: {
+        id: document.id,
+        filename: document.filename,
+        originalFilename: document.original_filename,
+        fileUrl: document.file_url,
+        fileSize: document.file_size,
+        fileType: getFileType(document.original_filename || document.filename),
+        pageCount: document.page_count,
+        overview: document.overview,
+        processingStatus: document.processing_status,
+        category: document.category || "resource",
+        academicYear: document.academic_year,
+        semester: document.semester,
+        classroomId: document.classroom_id ? Number(document.classroom_id) : null,
+        classroomName: classroomName,
+        subjectId: document.subject_id ? Number(document.subject_id) : null,
+        subjectName: subjectName,
+        accessScope: document.access_scope,
+        uploadedBy: {
+          name: document.uploader_name,
+          role: document.uploader_role,
+          isMe: String(document.user_id) === String(req.user.id)
+        },
+        createdAt: document.created_at
+      }
+    });
+  } catch (error) {
+    console.error("Get PDF by ID error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve document details."
+    });
+  }
+});
+
+async function extractDocumentPages(filePath, originalFilename = "") {
+  const pages = [];
+  const ext = path.extname(originalFilename || filePath).toLowerCase();
+  const isPdf = ext === ".pdf";
+  const isPptx = ext === ".pptx";
+
+  try {
+    const ast = await officeParser.parseOffice(filePath);
+    if (ast && Array.isArray(ast.content) && ast.content.length > 0) {
+      ast.content.forEach((node, idx) => {
+        const text = String(node.text || "").trim();
+        if (text) {
+          if (isPdf) {
+            const pageNum = Number(node.metadata?.pageNumber) || (idx + 1);
+            pages.push({ pageNumber: pageNum, text });
+          } else if (isPptx) {
+            const slideNum = Number(node.metadata?.slideNumber) || (idx + 1);
+            pages.push({ slideNumber: slideNum, text });
+          } else {
+            pages.push({ sectionNumber: idx + 1, text });
+          }
+        }
+      });
+    }
+
+    if (pages.length === 0 && ast) {
+      const parsedText = await ast.to("text");
+      const fallbackText = String(parsedText?.value || "").trim();
+      if (fallbackText) {
+        pages.push({ text: fallbackText });
+      }
+    }
+  } catch (err) {
+    console.warn("Could not extract pages via officeParser:", err.message);
+  }
+
+  return pages;
+}
+
+// ============================================================
+// CONVERSATIONAL CHAT ENGINE (PERSISTENT & GROUNDED)
+// ============================================================
+
+app.get("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT id, role, message, created_at as "createdAt"
+       FROM chat_messages
+       WHERE user_id = $1 AND pdf_id = $2
+       ORDER BY created_at ASC`,
+      [req.user.id, req.params.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      messages: result.rows
+    });
+  } catch (error) {
+    console.error("Get chat messages error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve chat messages."
+    });
+  }
+});
+
+app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
+  try {
+    const message = String(req.body?.message || "").trim();
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        message: "Message content is required."
+      });
+    }
+
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    // 1. Save student's user message
+    const userMsgResult = await pool.query(
+      `INSERT INTO chat_messages (user_id, pdf_id, role, message)
+       VALUES ($1, $2, 'user', $3)
+       RETURNING id, role, message, created_at as "createdAt"`,
+      [req.user.id, req.params.id, message]
+    );
+    const userMsg = userMsgResult.rows[0];
+
+    // 2. Fetch past conversation turns for grounding
+    const historyResult = await pool.query(
+      `SELECT role, message
+       FROM chat_messages
+       WHERE user_id = $1 AND pdf_id = $2
+       ORDER BY created_at DESC
+       LIMIT 8`,
+      [req.user.id, req.params.id]
+    );
+    const history = historyResult.rows.reverse();
+
+    // 3. Extract page-aware text from the document
+    const filePath = path.resolve(uploadDir, document.filename);
+    let pages = [];
+    if (
+      isSafeUploadFilename(document.filename) &&
+      path.dirname(filePath) === path.resolve(uploadDir) &&
+      fs.existsSync(filePath)
+    ) {
+      pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
+    }
+    if (!pages || pages.length === 0) {
+      pages = [{
+        text: `Document: ${document.original_filename}\nCategory: ${document.category || "Study Resource"}\nAcademic Year: ${document.academic_year || "Current Semester"}`
+      }];
+    }
+
+    // 4. Generate AI response with conversation context
+    const aiResult = await ragService.answer({
+      mode: "ask-ai",
+      question: message,
+      pages,
+      history
+    });
+
+    const assistantAnswer = aiResult.answer || "I reviewed the document, but could not produce a specific response.";
+
+    // 5. Persist assistant message
+    const botMsgResult = await pool.query(
+      `INSERT INTO chat_messages (user_id, pdf_id, role, message)
+       VALUES ($1, $2, 'assistant', $3)
+       RETURNING id, role, message, created_at as "createdAt"`,
+      [req.user.id, req.params.id, assistantAnswer]
+    );
+    const botMsg = botMsgResult.rows[0];
+
+    return res.status(200).json({
+      success: true,
+      userMessage: userMsg,
+      assistantMessage: botMsg,
+      sources: aiResult.sources || [],
+      provider: aiResult.provider
+    });
+
+  } catch (error) {
+    console.error("Chat generation error:", error);
+    return res.status(502).json({
+      success: false,
+      message: error.message || "Unable to generate study answer."
+    });
+  }
+});
+
+app.delete("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    await pool.query(
+      `DELETE FROM chat_messages WHERE user_id = $1 AND pdf_id = $2`,
+      [req.user.id, req.params.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Chat thread cleared successfully."
+    });
+  } catch (error) {
+    console.error("Clear chat error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to clear chat thread."
+    });
+  }
+});
+
+app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
+  try {
+    const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied."
+      });
+    }
+
+    const fileType =
+      getFileType(
+        document.original_filename || document.filename
+      );
+
+    if (fileType !== "docx" && fileType !== "pptx") {
+      return res.status(415).json({
+        success: false,
+        message: "Text extraction is only available for DOCX and PPTX files."
+      });
+    }
+
+    const filePath =
+      path.resolve(uploadDir, document.filename);
+
+    if (
+      path.dirname(filePath) !== path.resolve(uploadDir) ||
+      !fs.existsSync(filePath)
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "The uploaded document file was not found."
+      });
+    }
+
+    const ast =
+      await officeParser.parseOffice(filePath);
+
+    const parsedText =
+      await ast.to("text");
+
+    if (typeof parsedText.value !== "string") {
+      throw new Error("Office document parser returned invalid text.");
+    }
+
+    return res.status(200).json({
+      success: true,
+      text: parsedText.value
+    });
+  } catch (error) {
+    console.error("Office document text extraction error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to extract text from this document."
+    });
+  }
+});
+
+// ============================================================
+// COMMON PDF, DOCX AND PPTX TEXT EXTRACTION
+// ============================================================
+
+app.get(
+  "/api/pdfs/:id/extracted-text",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+      if (!document) {
+        return res.status(404).json({
+          success: false,
+          message: "Document not found or access denied."
+        });
+      }
+
+      if (!isSafeUploadFilename(document.filename)) {
+        console.error(
+          "Unsafe stored upload filename:",
+          document.filename
+        );
+
+        return res.status(500).json({
+          success: false,
+          message: "The stored document path is invalid."
+        });
+      }
+
+      const fileType =
+        getFileType(
+          document.original_filename ||
+          document.filename
+        );
+
+      if (
+        fileType !== "pdf" &&
+        fileType !== "docx" &&
+        fileType !== "pptx"
+      ) {
+        return res.status(415).json({
+          success: false,
+          message: "This document format is not supported."
+        });
+      }
+
+      const filePath =
+        path.resolve(uploadDir, document.filename);
+
+      if (
+        path.dirname(filePath) !==
+        path.resolve(uploadDir)
+      ) {
+        console.error(
+          "Resolved document path escaped upload directory:",
+          filePath
+        );
+
+        return res.status(500).json({
+          success: false,
+          message: "The document path is invalid."
+        });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({
+          success: false,
+          message: "The document file was not found."
+        });
+      }
+
+      const ast =
+        await officeParser.parseOffice(filePath);
+
+      const parsedText =
+        await ast.to("text");
+
+      if (
+        !parsedText ||
+        typeof parsedText.value !== "string"
+      ) {
+        throw new Error(
+          "Document parser returned invalid text."
+        );
+      }
+
+      const text =
+        parsedText.value.trim();
+
+      return res.status(200).json({
+        success: true,
+        document: {
+          id: document.id,
+          filename: document.filename,
+          originalFilename: document.original_filename,
+          fileType,
+          fileSize: document.file_size
+        },
+        content: {
+          text,
+          characterCount: text.length,
+          wordCount: countWords(text)
+        }
+      });
+
+    } catch (error) {
+      console.error(
+        "Common document text extraction error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to extract text from this document."
+      });
+    }
+  }
+);
+
+// ============================================================
+// NEURAL READ ALOUD AUDIO
+// ============================================================
+
+app.get(
+  "/api/tts/voices",
+  requireAuth,
+  (req, res) => {
+    try {
+      return res.status(200).json({
+        success: true,
+        voices: piperTtsProvider.getVoices()
+      });
+    } catch (error) {
+      console.error("Piper voice configuration error:", error);
+
+      return res.status(503).json({
+        success: false,
+        message: error.message
+      });
+    }
+  }
+);
+
+app.post(
+  "/api/pdfs/:id/tts",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+      if (!document) {
+        return res.status(404).json({
+          success: false,
+          message: "Document not found or access denied."
+        });
+      }
+
+      const {
+        text,
+        voiceName,
+        language,
+        rate
+      } = req.body || {};
+
+      const result =
+        await piperTtsProvider.synthesize({
+          text,
+          voiceName,
+          language,
+          rate
+        });
+
+      if (result.useClientSynthesis || !result.audio) {
+        return res.status(200).json({
+          success: true,
+          useClientSynthesis: true,
+          message: "Use browser neural speech synthesis."
+        });
+      }
+
+      res.set("Content-Type", result.contentType || "audio/wav");
+      res.set("Cache-Control", "private, max-age=3600");
+
+      return res.status(200).send(result.audio);
+    } catch (error) {
+      console.error(
+        "Neural text-to-speech error:",
+        error
+      );
+
+      return res.status(502).json({
+        success: false,
+        message:
+          error.message ||
+          "Unable to generate local reading audio."
+      });
+    }
+  }
+);
+
+// ============================================================
+// DOCUMENT-GROUNDED AI (RAG)
+// ============================================================
+
+app.post(
+  "/api/pdfs/:id/ai",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const mode =
+        String(req.body?.mode || "").toLowerCase();
+      const question =
+        String(req.body?.question || "").trim();
+      const summaryType =
+        String(req.body?.summaryType || "").toLowerCase();
+      const highlightedText =
+        String(req.body?.highlightedText || "").trim();
+
+      const allowedModes = [
+        "overview",
+        "summary",
+        "explanation",
+        "ask-ai"
+      ];
+
+      if (!allowedModes.includes(mode)) {
+        return res.status(400).json({
+          success: false,
+          message: "Unsupported AI mode."
+        });
+      }
+
+      if (mode === "ask-ai" && !question) {
+        return res.status(400).json({
+          success: false,
+          message: "A question is required for Ask AI."
+        });
+      }
+
+      let effectiveQuestion = question;
+      if (mode === "summary") {
+        if (summaryType === "quick") {
+          effectiveQuestion = "Provide an executive 3-bullet concise summary highlighting only the highest-impact key concepts.";
+        } else if (summaryType === "takeaways") {
+          effectiveQuestion = "Provide a high-yield exam cheat sheet: key formulas, core definitions, and top examination takeaways.";
+        } else if (summaryType === "detailed") {
+          effectiveQuestion = "Provide a comprehensive, in-depth academic study breakdown across all sections of this document.";
+        }
+      } else if (mode === "explanation" && highlightedText) {
+        effectiveQuestion = `Explain this specific highlighted excerpt from the document in clear, friendly pedagogical terms with an intuitive real-world analogy: "${highlightedText}"`;
+      }
+
+      const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+
+      if (!document) {
+        return res.status(404).json({
+          success: false,
+          message: "Document not found or access denied."
+        });
+      }
+
+      const filePath =
+        path.resolve(uploadDir, document.filename);
+
+      if (
+        !isSafeUploadFilename(document.filename) ||
+        path.dirname(filePath) !== path.resolve(uploadDir) ||
+        !fs.existsSync(filePath)
+      ) {
+        return res.status(404).json({
+          success: false,
+          message: "The document file was not found."
+        });
+      }
+
+      let pages = await extractDocumentPages(filePath, document.original_filename || document.filename);
+      if (!pages || pages.length === 0) {
+        pages = [{
+          text: `Document: ${document.original_filename}\nCategory: ${document.category || "Study Resource"}\nAcademic Year: ${document.academic_year || "Current Semester"}`
+        }];
+      }
+
+      const result = await ragService.answer({
+        mode,
+        question: effectiveQuestion,
+        pages,
+        summaryType
+      });
+
+      return res.status(200).json({
+        success: true,
+        document: {
+          id: req.params.id,
+          originalFilename: document.original_filename
+        },
+        ...result
+      });
+    } catch (error) {
+      console.error("Document AI error:", error);
+
+      return res.status(502).json({
+        success: false,
+        message:
+          error.message ||
+          "Unable to generate a document-grounded answer."
+      });
+    }
+  }
+);
+
+// ============================================================
+// DELETE PDF
+// ============================================================
+
+app.delete("/api/pdfs/:id", requireAuth, async (req, res) => {
+  try {
+    const pdfId = req.params.id;
+    const userId = req.user.id;
+
+    const document = await canAccessDocument(pdfId, userId, req.user.role);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        message: "PDF not found."
+      });
+    }
+
+    const isUploader = String(document.user_id) === String(userId);
+    const isAdmin = req.user.role === "admin";
+    let isClassroomTeacher = false;
+    if (document.classroom_id) {
+      const cRes = await pool.query(
+        "SELECT 1 FROM classrooms WHERE id = $1 AND teacher_id = $2",
+        [document.classroom_id, userId]
+      );
+      isClassroomTeacher = cRes.rows.length > 0;
+    }
+
+    if (!isUploader && !isAdmin && !isClassroomTeacher) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to delete this document."
+      });
+    }
+
+    const filename = document.filename;
+
+    await pool.query(
+      `DELETE FROM pdfs WHERE id = $1`,
+      [pdfId]
+    );
+
+    if (filename) {
+      const filePath = path.join(uploadDir, filename);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (e) {
+          console.warn("Could not delete physical file:", e.message);
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Resource deleted successfully."
+    });
+
+  } catch (error) {
+    console.error("Delete PDF error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to delete PDF."
+    });
+  }
+});
+
+// ============================================================
+// CLASSROOMS MANAGEMENT
+// ============================================================
+
+// 1. Create a Classroom (Teacher or Admin)
+app.post("/api/classrooms", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
+  try {
+    const { name, semester, section, description } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Classroom name is required."
+      });
+    }
+
+    // Generate unique 6-character code
+    let joinCode;
+    let codeExists = true;
+    for (let attempts = 0; attempts < 10 && codeExists; attempts++) {
+      joinCode = generateClassroomCode();
+      const existing = await pool.query("SELECT 1 FROM classrooms WHERE code = $1", [joinCode]);
+      if (existing.rows.length === 0) {
+        codeExists = false;
+      }
+    }
+
+    if (codeExists) {
+      return res.status(500).json({
+        success: false,
+        message: "Unable to generate unique classroom code. Please try again."
+      });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO classrooms (name, code, teacher_id, semester, section, description)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, code, teacher_id, semester, section, description, created_at`,
+      [
+        name.trim(),
+        joinCode,
+        req.user.id,
+        semester ? String(semester).trim() : null,
+        section ? String(section).trim() : null,
+        description ? String(description).trim() : null
+      ]
+    );
+
+    const classroom = result.rows[0];
+
+    return res.status(201).json({
+      success: true,
+      message: "Classroom created successfully.",
+      classroom: {
+        id: classroom.id,
+        name: classroom.name,
+        code: classroom.code,
+        semester: classroom.semester,
+        section: classroom.section,
+        description: classroom.description,
+        createdAt: classroom.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Create classroom error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create classroom."
+    });
+  }
+});
+
+// 2. Get Classrooms for Current User
+app.get("/api/classrooms", requireAuth, async (req, res) => {
+  try {
+    let result;
+
+    if (req.user.role === "teacher") {
+      result = await pool.query(
+        `SELECT
+          c.id,
+          c.name,
+          c.code,
+          c.semester,
+          c.section,
+          c.description,
+          c.created_at,
+          u.name as teacher_name,
+          COUNT(DISTINCT cm.student_id)::int as student_count,
+          COUNT(DISTINCT cs.subject_id)::int as subject_count,
+          COUNT(DISTINCT p.id)::int as resource_count
+        FROM classrooms c
+        JOIN users u ON c.teacher_id = u.id
+        LEFT JOIN classroom_members cm ON c.id = cm.classroom_id
+        LEFT JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+        LEFT JOIN pdfs p ON c.id = p.classroom_id AND p.is_archived = FALSE
+        WHERE c.teacher_id = $1 AND c.is_archived = FALSE
+        GROUP BY c.id, u.name
+        ORDER BY c.created_at DESC`,
+        [req.user.id]
+      );
+    } else if (req.user.role === "student") {
+      result = await pool.query(
+        `SELECT
+          c.id,
+          c.name,
+          c.code,
+          c.semester,
+          c.section,
+          c.description,
+          c.created_at,
+          u.name as teacher_name,
+          COUNT(DISTINCT cm2.student_id)::int as student_count,
+          COUNT(DISTINCT cs.subject_id)::int as subject_count,
+          COUNT(DISTINCT p.id)::int as resource_count,
+          cm.joined_at
+        FROM classrooms c
+        JOIN users u ON c.teacher_id = u.id
+        JOIN classroom_members cm ON c.id = cm.classroom_id AND cm.student_id = $1
+        LEFT JOIN classroom_members cm2 ON c.id = cm2.classroom_id
+        LEFT JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+        LEFT JOIN pdfs p ON c.id = p.classroom_id AND p.is_archived = FALSE
+        WHERE c.is_archived = FALSE
+        GROUP BY c.id, u.name, cm.joined_at
+        ORDER BY cm.joined_at DESC`,
+        [req.user.id]
+      );
+    } else {
+      // Admin gets all classrooms
+      result = await pool.query(
+        `SELECT
+          c.id,
+          c.name,
+          c.code,
+          c.semester,
+          c.section,
+          c.description,
+          c.created_at,
+          u.name as teacher_name,
+          COUNT(DISTINCT cm.student_id)::int as student_count,
+          COUNT(DISTINCT cs.subject_id)::int as subject_count,
+          COUNT(DISTINCT p.id)::int as resource_count
+        FROM classrooms c
+        JOIN users u ON c.teacher_id = u.id
+        LEFT JOIN classroom_members cm ON c.id = cm.classroom_id
+        LEFT JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+        LEFT JOIN pdfs p ON c.id = p.classroom_id AND p.is_archived = FALSE
+        WHERE c.is_archived = FALSE
+        GROUP BY c.id, u.name
+        ORDER BY c.created_at DESC`
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      classrooms: result.rows.map((c) => ({
+        id: c.id,
+        name: c.name,
+        code: c.code,
+        semester: c.semester,
+        section: c.section,
+        description: c.description,
+        teacherName: c.teacher_name,
+        studentCount: c.student_count,
+        subjectCount: c.subject_count,
+        resourceCount: c.resource_count,
+        joinedAt: c.joined_at || null,
+        createdAt: c.created_at
+      }))
+    });
+
+  } catch (error) {
+    console.error("Get classrooms error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve classrooms."
+    });
+  }
+});
+
+// 3. Join a Classroom (Students & Admins)
+app.post("/api/classrooms/join", requireAuth, async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    if (!code || typeof code !== "string" || !code.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a valid 6-character classroom code."
+      });
+    }
+
+    const cleanCode = code.trim().toUpperCase();
+
+    // Look up active classroom
+    const classResult = await pool.query(
+      `SELECT c.id, c.name, c.code, c.semester, c.section, c.description, u.name as teacher_name
+       FROM classrooms c
+       JOIN users u ON c.teacher_id = u.id
+       WHERE UPPER(c.code) = $1 AND c.is_archived = FALSE
+       LIMIT 1`,
+      [cleanCode]
+    );
+
+    if (classResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Classroom not found. Please verify the code with your instructor."
+      });
+    }
+
+    const classroom = classResult.rows[0];
+
+    // Check if already joined
+    const memberCheck = await pool.query(
+      `SELECT id FROM classroom_members WHERE classroom_id = $1 AND student_id = $2`,
+      [classroom.id, req.user.id]
+    );
+
+    if (memberCheck.rows.length > 0) {
+      return res.status(200).json({
+        success: true,
+        alreadyMember: true,
+        message: `You are already enrolled in ${classroom.name}.`,
+        classroom: {
+          id: classroom.id,
+          name: classroom.name,
+          code: classroom.code,
+          semester: classroom.semester,
+          section: classroom.section,
+          teacherName: classroom.teacher_name
+        }
+      });
+    }
+
+    // Insert student membership
+    await pool.query(
+      `INSERT INTO classroom_members (classroom_id, student_id) VALUES ($1, $2)`,
+      [classroom.id, req.user.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      alreadyMember: false,
+      message: `Enrolled successfully in ${classroom.name}! All classroom subjects are now accessible in your library.`,
+      classroom: {
+        id: classroom.id,
+        name: classroom.name,
+        code: classroom.code,
+        semester: classroom.semester,
+        section: classroom.section,
+        teacherName: classroom.teacher_name
+      }
+    });
+
+  } catch (error) {
+    console.error("Join classroom error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to join classroom. Please try again."
+    });
+  }
+});
+
+// 4. Get Classroom Details (Details, Subjects, & Student Roster)
+app.get("/api/classrooms/:id", requireAuth, async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+
+    // Verify access
+    const classResult = await pool.query(
+      `SELECT c.*, u.name as teacher_name, u.email as teacher_email
+       FROM classrooms c
+       JOIN users u ON c.teacher_id = u.id
+       WHERE c.id = $1 AND c.is_archived = FALSE
+       LIMIT 1`,
+      [classroomId]
+    );
+
+    if (classResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Classroom not found."
+      });
+    }
+
+    const classroom = classResult.rows[0];
+
+    const isTeacher = String(classroom.teacher_id) === String(req.user.id);
+    const isAdmin = req.user.role === "admin";
+
+    if (!isTeacher && !isAdmin) {
+      const membership = await pool.query(
+        `SELECT 1 FROM classroom_members WHERE classroom_id = $1 AND student_id = $2`,
+        [classroomId, req.user.id]
+      );
+      if (membership.rows.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not enrolled in this classroom."
+        });
+      }
+    }
+
+    // Get subjects in this classroom
+    const subjectsResult = await pool.query(
+      `SELECT
+        s.id,
+        s.name,
+        s.code,
+        s.description,
+        s.created_at,
+        COUNT(DISTINCT CASE WHEN p.category = 'resource' THEN p.id END)::int as resource_count,
+        COUNT(DISTINCT CASE WHEN p.category = 'pyq' THEN p.id END)::int as pyq_count,
+        COUNT(DISTINCT p.id)::int as total_documents
+      FROM classroom_subjects cs
+      JOIN subjects s ON cs.subject_id = s.id
+      LEFT JOIN pdfs p ON p.subject_id = s.id AND p.classroom_id = cs.classroom_id AND p.is_archived = FALSE
+      WHERE cs.classroom_id = $1 AND cs.is_archived = FALSE
+      GROUP BY s.id, s.name, s.code, s.description, s.created_at
+      ORDER BY s.name ASC`,
+      [classroomId]
+    );
+
+    // Get enrolled students (if teacher or admin)
+    let students = [];
+    if (isTeacher || isAdmin) {
+      const studentsResult = await pool.query(
+        `SELECT u.id, u.name, u.email, cm.joined_at
+         FROM classroom_members cm
+         JOIN users u ON cm.student_id = u.id
+         WHERE cm.classroom_id = $1
+         ORDER BY cm.joined_at DESC`,
+        [classroomId]
+      );
+      students = studentsResult.rows.map((s) => ({
+        id: s.id,
+        name: s.name,
+        email: s.email,
+        joinedAt: s.joined_at
+      }));
+    }
+
+    return res.status(200).json({
+      success: true,
+      classroom: {
+        id: classroom.id,
+        name: classroom.name,
+        code: classroom.code,
+        semester: classroom.semester,
+        section: classroom.section,
+        description: classroom.description,
+        teacherName: classroom.teacher_name,
+        teacherEmail: classroom.teacher_email,
+        createdAt: classroom.created_at
+      },
+      subjects: subjectsResult.rows.map((s) => ({
+        id: s.id,
+        name: s.name,
+        code: s.code,
+        description: s.description,
+        resourceCount: s.resource_count,
+        pyqCount: s.pyq_count,
+        totalDocuments: s.total_documents,
+        createdAt: s.created_at
+      })),
+      students
+    });
+
+  } catch (error) {
+    console.error("Get classroom details error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve classroom details."
+    });
+  }
+});
+
+// ============================================================
+// SUBJECT MANAGEMENT
+// ============================================================
+
+// 1. Add Subject to Classroom (Teacher or Admin)
+app.post("/api/classrooms/:id/subjects", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+    const { name, code, description } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Subject name is required."
+      });
+    }
+
+    // Verify ownership of classroom
+    if (req.user.role !== "admin") {
+      const classCheck = await pool.query(
+        "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
+        [classroomId, req.user.id]
+      );
+      if (classCheck.rows.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "You are not authorized to modify this classroom."
+        });
+      }
+    }
+
+    // Create subject
+    const subjectResult = await pool.query(
+      `INSERT INTO subjects (name, code, description, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, code, description, created_at`,
+      [
+        name.trim(),
+        code ? String(code).trim() : null,
+        description ? String(description).trim() : null,
+        req.user.id
+      ]
+    );
+
+    const subject = subjectResult.rows[0];
+
+    // Link subject to classroom
+    await pool.query(
+      `INSERT INTO classroom_subjects (classroom_id, subject_id, teacher_id)
+       VALUES ($1, $2, $3)`,
+      [classroomId, subject.id, req.user.id]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: `Subject '${subject.name}' added to classroom.`,
+      subject: {
+        id: subject.id,
+        name: subject.name,
+        code: subject.code,
+        description: subject.description,
+        classroomId: Number(classroomId),
+        createdAt: subject.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Add subject error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to add subject to classroom."
+    });
+  }
+});
+
+// 2. Create Personal Subject (Student or Teacher)
+app.post("/api/subjects/personal", requireAuth, async (req, res) => {
+  try {
+    const { name, code, description } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Subject name is required."
+      });
+    }
+
+    const subjectResult = await pool.query(
+      `INSERT INTO subjects (name, code, description, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, code, description, created_at`,
+      [
+        name.trim(),
+        code ? String(code).trim() : null,
+        description ? String(description).trim() : null,
+        req.user.id
+      ]
+    );
+
+    const subject = subjectResult.rows[0];
+
+    await pool.query(
+      `INSERT INTO student_subjects (student_id, subject_id)
+       VALUES ($1, $2)`,
+      [req.user.id, subject.id]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: `Personal subject '${subject.name}' created.`,
+      subject: {
+        id: subject.id,
+        name: subject.name,
+        code: subject.code,
+        description: subject.description,
+        isPersonal: true,
+        createdAt: subject.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Create personal subject error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create personal subject."
+    });
+  }
+});
+
+// 3. Get All Subjects for Current User (Classroom + Personal with counts)
+app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    let query;
+    let params = [userId];
+
+    if (role === "teacher") {
+      query = `
+        SELECT
+          s.id,
+          s.name,
+          s.code,
+          s.description,
+          s.created_at,
+          c.id as classroom_id,
+          c.name as classroom_name,
+          c.semester,
+          c.section,
+          u.name as teacher_name,
+          'classroom' as subject_type,
+          COUNT(DISTINCT CASE WHEN p.category = 'resource' AND p.is_archived = FALSE THEN p.id END)::int as resource_count,
+          COUNT(DISTINCT CASE WHEN p.category = 'pyq' AND p.is_archived = FALSE THEN p.id END)::int as pyq_count,
+          COUNT(DISTINCT CASE WHEN p.is_archived = FALSE THEN p.id END)::int as total_documents
+        FROM classrooms c
+        JOIN users u ON c.teacher_id = u.id
+        JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+        JOIN subjects s ON cs.subject_id = s.id
+        LEFT JOIN pdfs p ON p.subject_id = s.id AND p.classroom_id = c.id
+        WHERE c.teacher_id = $1 AND c.is_archived = FALSE
+        GROUP BY s.id, s.name, s.code, s.description, s.created_at, c.id, c.name, c.semester, c.section, u.name
+
+        UNION ALL
+
+        SELECT
+          s.id,
+          s.name,
+          s.code,
+          s.description,
+          s.created_at,
+          NULL as classroom_id,
+          'Personal Space' as classroom_name,
+          NULL as semester,
+          NULL as section,
+          u.name as teacher_name,
+          'personal' as subject_type,
+          COUNT(DISTINCT CASE WHEN p.category = 'resource' AND p.is_archived = FALSE THEN p.id END)::int as resource_count,
+          COUNT(DISTINCT CASE WHEN p.category = 'pyq' AND p.is_archived = FALSE THEN p.id END)::int as pyq_count,
+          COUNT(DISTINCT CASE WHEN p.is_archived = FALSE THEN p.id END)::int as total_documents
+        FROM student_subjects ss
+        JOIN subjects s ON ss.subject_id = s.id
+        JOIN users u ON ss.student_id = u.id
+        LEFT JOIN pdfs p ON p.subject_id = s.id AND p.user_id = $1 AND p.access_scope = 'private'
+        WHERE ss.student_id = $1 AND ss.is_archived = FALSE
+        GROUP BY s.id, s.name, s.code, s.description, s.created_at, u.name
+
+        ORDER BY name ASC
+      `;
+    } else {
+      // Student or Admin
+      query = `
+        SELECT
+          s.id,
+          s.name,
+          s.code,
+          s.description,
+          s.created_at,
+          c.id as classroom_id,
+          c.name as classroom_name,
+          c.semester,
+          c.section,
+          u.name as teacher_name,
+          'classroom' as subject_type,
+          COUNT(DISTINCT CASE WHEN p.category = 'resource' AND p.is_archived = FALSE THEN p.id END)::int as resource_count,
+          COUNT(DISTINCT CASE WHEN p.category = 'pyq' AND p.is_archived = FALSE THEN p.id END)::int as pyq_count,
+          COUNT(DISTINCT CASE WHEN p.is_archived = FALSE THEN p.id END)::int as total_documents
+        FROM classroom_members cm
+        JOIN classrooms c ON cm.classroom_id = c.id AND c.is_archived = FALSE
+        JOIN users u ON c.teacher_id = u.id
+        JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+        JOIN subjects s ON cs.subject_id = s.id
+        LEFT JOIN pdfs p ON p.subject_id = s.id AND (p.classroom_id = c.id OR (p.user_id = $1 AND p.classroom_id IS NULL))
+        WHERE cm.student_id = $1
+        GROUP BY s.id, s.name, s.code, s.description, s.created_at, c.id, c.name, c.semester, c.section, u.name
+
+        UNION ALL
+
+        SELECT
+          s.id,
+          s.name,
+          s.code,
+          s.description,
+          s.created_at,
+          NULL as classroom_id,
+          'Personal Space' as classroom_name,
+          NULL as semester,
+          NULL as section,
+          u.name as teacher_name,
+          'personal' as subject_type,
+          COUNT(DISTINCT CASE WHEN p.category = 'resource' AND p.is_archived = FALSE THEN p.id END)::int as resource_count,
+          COUNT(DISTINCT CASE WHEN p.category = 'pyq' AND p.is_archived = FALSE THEN p.id END)::int as pyq_count,
+          COUNT(DISTINCT CASE WHEN p.is_archived = FALSE THEN p.id END)::int as total_documents
+        FROM student_subjects ss
+        JOIN subjects s ON ss.subject_id = s.id
+        JOIN users u ON ss.student_id = u.id
+        LEFT JOIN pdfs p ON p.subject_id = s.id AND p.user_id = $1 AND p.access_scope = 'private'
+        WHERE ss.student_id = $1 AND ss.is_archived = FALSE
+        GROUP BY s.id, s.name, s.code, s.description, s.created_at, u.name
+
+        ORDER BY name ASC
+      `;
+    }
+
+    const result = await pool.query(query, params);
+
+    return res.status(200).json({
+      success: true,
+      subjects: result.rows.map((s) => ({
+        id: s.id,
+        name: s.name,
+        code: s.code,
+        description: s.description,
+        classroomId: s.classroom_id,
+        classroomName: s.classroom_name,
+        semester: s.semester,
+        section: s.section,
+        teacherName: s.teacher_name,
+        subjectType: s.subject_type,
+        resourceCount: s.resource_count,
+        pyqCount: s.pyq_count,
+        totalDocuments: s.total_documents,
+        createdAt: s.created_at
+      }))
+    });
+
+  } catch (error) {
+    console.error("Get my subjects error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve subjects."
+    });
+  }
+});
+
+// 4. Get Subject Details and Resources/PYQs
+app.get("/api/subjects/:id", requireAuth, async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+
+    // Get subject information
+    const subjectResult = await pool.query(
+      `SELECT
+        s.id,
+        s.name,
+        s.code,
+        s.description,
+        s.created_at,
+        c.id as classroom_id,
+        c.name as classroom_name,
+        c.semester,
+        c.section,
+        u.name as teacher_name
+      FROM subjects s
+      LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+      LEFT JOIN classrooms c ON cs.classroom_id = c.id
+      LEFT JOIN users u ON c.teacher_id = u.id
+      WHERE s.id = $1
+      LIMIT 1`,
+      [subjectId]
+    );
+
+    if (subjectResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Subject not found."
+      });
+    }
+
+    const subject = subjectResult.rows[0];
+
+    // Fetch accessible documents for this subject
+    const docsResult = await pool.query(
+      `SELECT
+        p.id,
+        p.user_id,
+        p.filename,
+        p.original_filename,
+        p.file_url,
+        p.file_size,
+        p.page_count,
+        p.processing_status,
+        p.category,
+        p.academic_year,
+        p.semester,
+        p.classroom_id,
+        p.subject_id,
+        p.access_scope,
+        p.created_at,
+        u.name as uploader_name,
+        u.role as uploader_role
+      FROM pdfs p
+      JOIN users u ON p.user_id = u.id
+      WHERE p.subject_id = $1
+        AND p.is_archived = FALSE
+        AND (
+          p.user_id = $2
+          OR (
+            p.access_scope = 'classroom'
+            AND p.classroom_id IS NOT NULL
+            AND (
+              EXISTS (
+                SELECT 1 FROM classroom_members cm 
+                WHERE cm.classroom_id = p.classroom_id AND cm.student_id = $2
+              )
+              OR EXISTS (
+                SELECT 1 FROM classrooms cl 
+                WHERE cl.id = p.classroom_id AND cl.teacher_id = $2
+              )
+            )
+          )
+          OR $3 = 'admin'
+        )
+      ORDER BY p.created_at DESC`,
+      [subjectId, req.user.id, req.user.role]
+    );
+
+    const resources = [];
+    const pyqs = [];
+
+    docsResult.rows.forEach((doc) => {
+      const item = {
+        id: doc.id,
+        filename: doc.filename,
+        originalFilename: doc.original_filename,
+        fileUrl: doc.file_url,
+        fileSize: doc.file_size,
+        fileType: getFileType(doc.original_filename || doc.filename),
+        pageCount: doc.page_count,
+        processingStatus: doc.processing_status,
+        category: doc.category,
+        academicYear: doc.academic_year,
+        semester: doc.semester,
+        classroomId: doc.classroom_id,
+        accessScope: doc.access_scope,
+        uploadedBy: {
+          name: doc.uploader_name,
+          role: doc.uploader_role,
+          isMe: String(doc.user_id) === String(req.user.id)
+        },
+        createdAt: doc.created_at
+      };
+
+      if (doc.category === "pyq") {
+        pyqs.push(item);
+      } else {
+        resources.push(item);
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      subject: {
+        id: subject.id,
+        name: subject.name,
+        code: subject.code,
+        description: subject.description,
+        classroomId: subject.classroom_id,
+        classroomName: subject.classroom_name,
+        semester: subject.semester,
+        section: subject.section,
+        teacherName: subject.teacher_name,
+        createdAt: subject.created_at
+      },
+      resources,
+      pyqs
+    });
+
+  } catch (error) {
+    console.error("Get subject details error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve subject details."
+    });
+  }
+});
+
+// ============================================================
+// SUBJECT-LEVEL AI (MULTI-DOCUMENT SYNTHESIS & PYQ ANALYSIS)
+// ============================================================
+
+// 1. Analyze All Study Resources in Subject
+app.post("/api/subjects/:id/ai/analyze-resources", requireAuth, async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+
+    const docsResult = await pool.query(
+      `SELECT p.id, p.filename, p.original_filename
+       FROM pdfs p
+       WHERE p.subject_id = $1
+         AND p.category = 'resource'
+         AND p.is_archived = FALSE
+         AND (
+           p.user_id = $2
+           OR (
+             p.access_scope = 'classroom'
+             AND (
+               EXISTS (SELECT 1 FROM classroom_members cm WHERE cm.classroom_id = p.classroom_id AND cm.student_id = $2)
+               OR EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = p.classroom_id AND cl.teacher_id = $2)
+             )
+           )
+           OR $3 = 'admin'
+         )
+       LIMIT 8`,
+      [subjectId, req.user.id, req.user.role]
+    );
+
+    if (docsResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No study resource documents found in this subject to analyze. Please upload notes or lecture slides first."
+      });
+    }
+
+    let combinedText = "";
+    const processedDocs = [];
+
+    for (const doc of docsResult.rows) {
+      const filePath = path.resolve(uploadDir, doc.filename);
+      if (fs.existsSync(filePath)) {
+        try {
+          const ast = await officeParser.parseOffice(filePath);
+          const parsed = await ast.to("text");
+          const text = String(parsed.value || "").trim();
+          if (text) {
+            combinedText += `\n\n--- Document: ${doc.original_filename} ---\n` + text.slice(0, 3000);
+            processedDocs.push(doc.original_filename);
+          }
+        } catch (e) {
+          console.warn("Could not extract text from", doc.filename, e.message);
+        }
+      }
+    }
+
+    if (!combinedText.trim()) {
+      combinedText = `Subject Study Resources:\n` + docsResult.rows.map(d => `- ${d.original_filename}`).join("\n");
+      docsResult.rows.forEach(d => processedDocs.push(d.original_filename));
+    }
+
+    let result;
+    try {
+      result = await ragService.answer({
+        mode: "overview",
+        question: "Provide an integrated subject study guide: main topics covered across all resources, core definitions, syllabus breakdown, and key revision highlights.",
+        text: combinedText
+      });
+    } catch (aiErr) {
+      console.error("Subject AI analyze resources error:", aiErr.message);
+      return res.status(502).json({
+        success: false,
+        message: aiErr.message || "Unable to analyze subject resources with Gemini AI."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      subjectId,
+      analyzedDocuments: processedDocs,
+      ...result
+    });
+
+  } catch (error) {
+    console.error("Subject AI analyze resources error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to analyze subject resources."
+    });
+  }
+});
+
+// 2. Analyze PYQs in Subject (Frequency, Repeated Topics, Weightage)
+app.post("/api/subjects/:id/ai/analyze-pyqs", requireAuth, async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+
+    const docsResult = await pool.query(
+      `SELECT p.id, p.filename, p.original_filename, p.academic_year
+       FROM pdfs p
+       WHERE p.subject_id = $1
+         AND p.category = 'pyq'
+         AND p.is_archived = FALSE
+         AND (
+           p.user_id = $2
+           OR (
+             p.access_scope = 'classroom'
+             AND (
+               EXISTS (SELECT 1 FROM classroom_members cm WHERE cm.classroom_id = p.classroom_id AND cm.student_id = $2)
+               OR EXISTS (SELECT 1 FROM classrooms cl WHERE cl.id = p.classroom_id AND cl.teacher_id = $2)
+             )
+           )
+           OR $3 = 'admin'
+         )
+       LIMIT 8`,
+      [subjectId, req.user.id, req.user.role]
+    );
+
+    if (docsResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No Previous Year Question papers (PYQs) found in this subject. Please upload PYQs first."
+      });
+    }
+
+    let combinedText = "";
+    const processedDocs = [];
+
+    for (const doc of docsResult.rows) {
+      const filePath = path.resolve(uploadDir, doc.filename);
+      if (fs.existsSync(filePath)) {
+        try {
+          const ast = await officeParser.parseOffice(filePath);
+          const parsed = await ast.to("text");
+          const text = String(parsed.value || "").trim();
+          if (text) {
+            combinedText += `\n\n--- PYQ Paper [${doc.academic_year || "Unknown Year"}]: ${doc.original_filename} ---\n` + text.slice(0, 3000);
+            processedDocs.push(`${doc.original_filename} (${doc.academic_year || "N/A"})`);
+          }
+        } catch (e) {
+          console.warn("Could not extract text from PYQ", doc.filename, e.message);
+        }
+      }
+    }
+
+    if (!combinedText.trim()) {
+      combinedText = `Previous Year Exam Question Papers:\n` + docsResult.rows.map(d => `- Paper: ${d.original_filename} (Year: ${d.academic_year || "Unknown"})`).join("\n");
+      docsResult.rows.forEach(d => processedDocs.push(`${d.original_filename} (${d.academic_year || "N/A"})`));
+    }
+
+    let result;
+    try {
+      result = await ragService.answer({
+        mode: "explanation",
+        question: "Analyze these Previous Year Question papers. Identify recurring questions, high-frequency topics, repeated patterns across academic years, and high-yield study topics for final exams.",
+        text: combinedText
+      });
+    } catch (aiErr) {
+      console.error("Subject AI analyze PYQs error:", aiErr.message);
+      return res.status(502).json({
+        success: false,
+        message: aiErr.message || "Unable to analyze subject PYQs with Gemini AI."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      subjectId,
+      analyzedPapers: processedDocs,
+      ...result
+    });
+
+  } catch (error) {
+    console.error("Subject AI analyze PYQs error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to analyze subject PYQs."
+    });
+  }
+});
+
+// ============================================================
+// ADMIN METRICS & USER MANAGEMENT
+// ============================================================
+
+app.get("/api/admin/metrics", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const userStats = await pool.query(`
+      SELECT
+        COUNT(*)::int as total_users,
+        COUNT(CASE WHEN role = 'student' THEN 1 END)::int as student_count,
+        COUNT(CASE WHEN role = 'teacher' THEN 1 END)::int as teacher_count,
+        COUNT(CASE WHEN role = 'admin' THEN 1 END)::int as admin_count
+      FROM users
+    `);
+
+    const classStats = await pool.query(`
+      SELECT COUNT(*)::int as total_classrooms FROM classrooms WHERE is_archived = FALSE
+    `);
+
+    const docStats = await pool.query(`
+      SELECT
+        COUNT(*)::int as total_documents,
+        COUNT(CASE WHEN category = 'resource' THEN 1 END)::int as resource_count,
+        COUNT(CASE WHEN category = 'pyq' THEN 1 END)::int as pyq_count
+      FROM pdfs
+      WHERE is_archived = FALSE
+    `);
+
+    const subjectStats = await pool.query(`
+      SELECT COUNT(*)::int as total_subjects FROM subjects
+    `);
+
+    return res.status(200).json({
+      success: true,
+      metrics: {
+        totalUsers: userStats.rows[0].total_users,
+        studentCount: userStats.rows[0].student_count,
+        teacherCount: userStats.rows[0].teacher_count,
+        adminCount: userStats.rows[0].admin_count,
+        totalClassrooms: classStats.rows[0].total_classrooms,
+        totalSubjects: subjectStats.rows[0].total_subjects,
+        totalDocuments: docStats.rows[0].total_documents,
+        resourceCount: docStats.rows[0].resource_count,
+        pyqCount: docStats.rows[0].pyq_count
+      }
+    });
+
+  } catch (error) {
+    console.error("Admin metrics error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve system metrics."
+    });
+  }
+});
+
+app.get("/api/admin/users", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, email, role, is_active, is_approved, created_at, last_login
+      FROM users
+      ORDER BY created_at DESC
+    `);
+
+    return res.status(200).json({
+      success: true,
+      users: result.rows
+    });
+  } catch (error) {
+    console.error("Admin get users error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve users."
+    });
+  }
+});
+
+app.post("/api/admin/users/:id/approve", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const result = await pool.query(`
+      UPDATE users
+      SET is_approved = NOT is_approved
+      WHERE id = $1
+      RETURNING id, name, email, role, is_approved
+    `, [req.params.id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `User ${result.rows[0].name} approval status updated to ${result.rows[0].is_approved}.`,
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error("Admin approve user error:", error);
+    return res.status(500).json({ success: false, message: "Unable to update approval status." });
+  }
+});
+// ============================================================
+// Start Server
+// ============================================================
+
+let serverInstance = null;
+
+async function startServer() {
+  try {
+    await pool.query("SELECT 1");
+
+    console.log("PostgreSQL connected successfully.");
+
+    if (process.env.NODE_ENV !== "test") {
+      serverInstance = app.listen(PORT, () => {
+        console.log(`StudyReader backend running on http://localhost:${PORT}`);
+      });
+
+      // Keep event loop active indefinitely on Windows
+      setInterval(() => {}, 1000 * 60 * 60);
+
+      serverInstance.on("close", () => console.log("SERVER CLOSED EVENT TRIGGERED"));
+    }
+  } catch (error) {
+    console.error("Failed to connect to PostgreSQL.", error);
+
+    process.exit(1);
+  }
+}
+
+process.on("beforeExit", (code) => {
+  console.log("PROCESS BEFORE EXIT TRIGGERED, CODE:", code);
+  console.log("ACTIVE HANDLES:", process._getActiveHandles());
+});
+
+process.on("exit", (code) => {
+  console.log("PROCESS EXIT TRIGGERED, CODE:", code);
+});
+
+startServer();
+
+module.exports = { app, pool, startServer };
+
