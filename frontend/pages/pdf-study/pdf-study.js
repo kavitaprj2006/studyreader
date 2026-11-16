@@ -76,6 +76,7 @@ const chatClearBtn = document.getElementById("chat-clear-btn");
 
 const aiSummaryView = document.getElementById("ai-summary-view");
 const summaryContent = document.getElementById("summary-content");
+const summaryAudioBar = document.getElementById("summary-audio-bar");
 
 const aiOverviewView = document.getElementById("ai-overview-view");
 const overviewContent = document.getElementById("overview-content");
@@ -117,14 +118,181 @@ const readAloudElements = {
   error: document.getElementById("read-aloud-error")
 };
 
-let activeSpeechState = {
-  rawText: "",
-  btnElement: null,
-  speedSelect: null,
-  utterance: null
-};
+/* ============================================================
+   SHARED INLINE SPEECH CONTROLLER (AI CHAT & SUMMARIES)
+   ============================================================ */
+
+const StudyReaderInlineSpeech = (() => {
+  let state = "idle"; // "idle" | "playing" | "paused"
+  let ownerId = null; // ID of active audio session (e.g. chat message id or "summary")
+  let sentences = [];
+  let currentIndex = 0;
+  let rate = 1.0;
+  let isCancelling = false;
+  let activeUiUpdater = null; // function(state, ownerId)
+
+  function splitIntoSentences(text) {
+    if (!text) return [];
+    const cleaned = window.StudyReaderSpeechNormalizer
+      ? window.StudyReaderSpeechNormalizer.normalize(text)
+      : text.replace(/[*#`_>-]/g, " ").replace(/\s+/g, " ");
+
+    const protectedText = cleaned
+      .replace(/\b(\d+)\.\s+/g, "$1: ")
+      .replace(/\b(e\.g\.|i\.e\.|etc\.)/gi, (m) => m.replace(/\./g, ""));
+
+    const rawParts = protectedText.match(/[^.!?\n\r]+[.!?]+|[^.!?\n\r]+$/g) || [protectedText];
+    const result = [];
+    for (const part of rawParts) {
+      const trimmed = part.trim();
+      if (trimmed.length > 0) {
+        if (trimmed.length > 250) {
+          const subParts = trimmed.match(/[^,;:]+[,;:]+|[^,;:]+$/g) || [trimmed];
+          for (const sub of subParts) {
+            const subTrimmed = sub.trim();
+            if (subTrimmed.length > 0) result.push(subTrimmed);
+          }
+        } else {
+          result.push(trimmed);
+        }
+      }
+    }
+    return result;
+  }
+
+  function notifyUi() {
+    if (typeof activeUiUpdater === "function") {
+      try {
+        activeUiUpdater(state, ownerId);
+      } catch (err) {
+        console.warn("Error updating speech UI:", err);
+      }
+    }
+  }
+
+  function speakCurrentSentence() {
+    if (state !== "playing") return;
+    if (currentIndex >= sentences.length) {
+      stop();
+      return;
+    }
+    if (!("speechSynthesis" in window)) {
+      stop();
+      return;
+    }
+
+    const sentence = sentences[currentIndex];
+    const utterance = new SpeechSynthesisUtterance(sentence);
+    utterance.rate = Math.max(0.5, Math.min(2.0, rate));
+
+    utterance.onend = () => {
+      if (isCancelling) return;
+      if (state === "playing") {
+        currentIndex++;
+        speakCurrentSentence();
+      }
+    };
+
+    utterance.onerror = (e) => {
+      if (isCancelling) return;
+      if (e.error === "interrupted" || e.error === "canceled") return;
+      console.warn("Speech error on sentence:", e);
+      if (state === "playing") {
+        currentIndex++;
+        speakCurrentSentence();
+      }
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function play(newOwnerId, rawText, newRate = 1.0, uiUpdater = null) {
+    if (ownerId && (ownerId !== newOwnerId || state !== "idle")) {
+      stop();
+    }
+
+    // Stop document-level read-aloud toolbar if running
+    if (window.StudyReaderReadAloud && typeof window.StudyReaderReadAloud.stop === "function") {
+      try { window.StudyReaderReadAloud.stop(); } catch (_) {}
+    }
+
+    ownerId = newOwnerId;
+    rate = Number(newRate) || 1.0;
+    activeUiUpdater = uiUpdater;
+    sentences = splitIntoSentences(rawText);
+    currentIndex = 0;
+
+    if (sentences.length === 0) {
+      stop();
+      return;
+    }
+
+    state = "playing";
+    notifyUi();
+    speakCurrentSentence();
+  }
+
+  function pause() {
+    if (state !== "playing") return;
+    state = "paused";
+    isCancelling = true;
+    if ("speechSynthesis" in window) {
+      try { window.speechSynthesis.cancel(); } catch (_) {}
+    }
+    isCancelling = false;
+    notifyUi();
+  }
+
+  function resume() {
+    if (state !== "paused") return;
+    state = "playing";
+    notifyUi();
+    speakCurrentSentence();
+  }
+
+  function stop() {
+    isCancelling = true;
+    if ("speechSynthesis" in window) {
+      try { window.speechSynthesis.cancel(); } catch (_) {}
+    }
+    isCancelling = false;
+    state = "idle";
+    currentIndex = 0;
+    notifyUi();
+    ownerId = null;
+    activeUiUpdater = null;
+    sentences = [];
+  }
+
+  function setRate(newRate) {
+    rate = Number(newRate) || 1.0;
+    if (state === "playing") {
+      isCancelling = true;
+      if ("speechSynthesis" in window) {
+        try { window.speechSynthesis.cancel(); } catch (_) {}
+      }
+      isCancelling = false;
+      speakCurrentSentence();
+    }
+  }
+
+  return {
+    play,
+    pause,
+    resume,
+    stop,
+    setRate,
+    getState: () => state,
+    getOwnerId: () => ownerId
+  };
+})();
 
 function stopAllSpeechAudio() {
+  if (StudyReaderInlineSpeech) {
+    try {
+      StudyReaderInlineSpeech.stop();
+    } catch (_) {}
+  }
   if ("speechSynthesis" in window) {
     try {
       window.speechSynthesis.cancel();
@@ -135,21 +303,159 @@ function stopAllSpeechAudio() {
       window.StudyReaderReadAloud.stop();
     } catch (_) {}
   }
-  if (activeSpeechState && activeSpeechState.btnElement) {
-    try {
-      activeSpeechState.btnElement.innerHTML = "<span>🔊</span> Listen";
-    } catch (_) {}
-  }
-  activeSpeechState = {
-    rawText: "",
-    btnElement: null,
-    speedSelect: null,
-    utterance: null
-  };
   if (readAloudPanel) {
     readAloudPanel.hidden = true;
     readAloudPanel.style.display = "none";
   }
+}
+
+function attachInlineAudioControls({ container, ownerId, getText, initialRate = 1.0, showCopy = false, showPrint = false }) {
+  container.innerHTML = "";
+
+  const controlsWrapper = document.createElement("div");
+  controlsWrapper.className = "inline-audio-controls";
+  controlsWrapper.style.display = "inline-flex";
+  controlsWrapper.style.alignItems = "center";
+  controlsWrapper.style.gap = "6px";
+  controlsWrapper.style.flexWrap = "wrap";
+
+  const btnListen = document.createElement("button");
+  btnListen.type = "button";
+  btnListen.className = "chat-bubble-action-btn";
+  btnListen.innerHTML = "<span>🔊</span> Listen";
+
+  const btnPause = document.createElement("button");
+  btnPause.type = "button";
+  btnPause.className = "chat-bubble-action-btn";
+  btnPause.innerHTML = "<span>⏸</span> Pause";
+  btnPause.style.display = "none";
+
+  const btnResume = document.createElement("button");
+  btnResume.type = "button";
+  btnResume.className = "chat-bubble-action-btn";
+  btnResume.innerHTML = "<span>▶</span> Resume";
+  btnResume.style.display = "none";
+
+  const btnStop = document.createElement("button");
+  btnStop.type = "button";
+  btnStop.className = "chat-bubble-action-btn";
+  btnStop.innerHTML = "<span>⏹</span> Stop";
+  btnStop.style.display = "none";
+
+  const speedSelect = document.createElement("select");
+  speedSelect.className = "chat-bubble-speed-select";
+  [
+    { label: "0.75x", val: 0.75 },
+    { label: "1x", val: 1.0, selected: initialRate === 1.0 },
+    { label: "1.25x", val: 1.25, selected: initialRate === 1.25 },
+    { label: "1.5x", val: 1.5, selected: initialRate === 1.5 },
+    { label: "2x", val: 2.0, selected: initialRate === 2.0 }
+  ].forEach((opt) => {
+    const o = document.createElement("option");
+    o.value = opt.val;
+    o.textContent = opt.label;
+    if (opt.selected) o.selected = true;
+    speedSelect.appendChild(o);
+  });
+
+  function updateUi(state, currentOwnerId) {
+    if (currentOwnerId !== ownerId || state === "idle") {
+      btnListen.style.display = "inline-flex";
+      btnPause.style.display = "none";
+      btnResume.style.display = "none";
+      btnStop.style.display = "none";
+    } else if (state === "playing") {
+      btnListen.style.display = "none";
+      btnPause.style.display = "inline-flex";
+      btnResume.style.display = "none";
+      btnStop.style.display = "inline-flex";
+    } else if (state === "paused") {
+      btnListen.style.display = "none";
+      btnPause.style.display = "none";
+      btnResume.style.display = "inline-flex";
+      btnStop.style.display = "inline-flex";
+    }
+  }
+
+  btnListen.addEventListener("click", () => {
+    const text = typeof getText === "function" ? getText() : getText;
+    const r = parseFloat(speedSelect.value) || 1.0;
+    StudyReaderInlineSpeech.play(ownerId, text, r, updateUi);
+  });
+
+  btnPause.addEventListener("click", () => {
+    StudyReaderInlineSpeech.pause();
+  });
+
+  btnResume.addEventListener("click", () => {
+    StudyReaderInlineSpeech.resume();
+  });
+
+  btnStop.addEventListener("click", () => {
+    StudyReaderInlineSpeech.stop();
+  });
+
+  speedSelect.addEventListener("change", () => {
+    const r = parseFloat(speedSelect.value) || 1.0;
+    if (StudyReaderInlineSpeech.getOwnerId() === ownerId) {
+      StudyReaderInlineSpeech.setRate(r);
+    }
+  });
+
+  controlsWrapper.appendChild(btnListen);
+  controlsWrapper.appendChild(btnPause);
+  controlsWrapper.appendChild(btnResume);
+  controlsWrapper.appendChild(btnStop);
+  controlsWrapper.appendChild(speedSelect);
+
+  if (showCopy) {
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "chat-bubble-action-btn";
+    copyBtn.innerHTML = "<span>📋</span> Copy";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        const text = typeof getText === "function" ? getText() : getText;
+        await navigator.clipboard.writeText(text);
+        copyBtn.innerHTML = "<span>✓</span> Copied";
+        setTimeout(() => { copyBtn.innerHTML = "<span>📋</span> Copy"; }, 2000);
+      } catch (_) {}
+    });
+    controlsWrapper.appendChild(copyBtn);
+  }
+
+  if (showPrint) {
+    const printBtn = document.createElement("button");
+    printBtn.type = "button";
+    printBtn.className = "chat-bubble-action-btn";
+    printBtn.innerHTML = "<span>🖨</span> Print / PDF";
+    printBtn.addEventListener("click", () => {
+      const text = typeof getText === "function" ? getText() : getText;
+      const printWindow = window.open("", "_blank");
+      printWindow.document.write(`
+        <html>
+          <head><title>StudyReader Summary - ${escapeHTML(pdfTitle.textContent)}</title></head>
+          <body style="font-family: system-ui, sans-serif; padding: 40px; line-height: 1.6; max-width: 800px; margin: 0 auto;">
+            <h2>${escapeHTML(pdfTitle.textContent)}</h2>
+            <hr style="margin: 16px 0; border: none; border-top: 1px solid #ccc;">
+            ${formatMarkdown(text)}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.focus();
+      printWindow.print();
+    });
+    controlsWrapper.appendChild(printBtn);
+  }
+
+  container.appendChild(controlsWrapper);
+
+  if (StudyReaderInlineSpeech.getOwnerId() === ownerId) {
+    updateUi(StudyReaderInlineSpeech.getState(), ownerId);
+  }
+
+  return { updateUi };
 }
 
 /* ============================================================
@@ -250,6 +556,10 @@ async function openDocument(id, updateHistory = true) {
   summaryCache = { quick: null, detailed: null, takeaways: null };
   overviewCache = null;
   readAloudInitialized = false;
+  if (summaryAudioBar) {
+    summaryAudioBar.style.display = "none";
+    summaryAudioBar.innerHTML = "";
+  }
 
   await loadSelectedPDF();
 }
@@ -289,6 +599,10 @@ function showEmptySelectionState() {
   if (readAloudPanel) {
     readAloudPanel.hidden = true;
     readAloudPanel.style.display = "none";
+  }
+  if (summaryAudioBar) {
+    summaryAudioBar.style.display = "none";
+    summaryAudioBar.innerHTML = "";
   }
   if (pdfEmptySelection) {
     pdfEmptySelection.hidden = false;
@@ -550,6 +864,7 @@ function connectViewerControls() {
 
   if (btnCloseAiPanel) {
     btnCloseAiPanel.addEventListener("click", () => {
+      stopAllSpeechAudio();
       documentAiPanel.hidden = true;
       documentAiPanel.style.display = "none";
       setActiveStudyTool("view");
@@ -707,55 +1022,15 @@ function appendChatBubble(role, messageText, shouldScroll = true) {
     const actions = document.createElement("div");
     actions.className = "chat-bubble-actions";
 
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "chat-bubble-action-btn";
-    copyBtn.innerHTML = "<span>📋</span> Copy";
-    copyBtn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(messageText);
-        copyBtn.innerHTML = "<span>✓</span> Copied";
-        setTimeout(() => { copyBtn.innerHTML = "<span>📋</span> Copy"; }, 2000);
-      } catch (_) {}
+    const msgId = "chat-msg-" + Date.now() + "-" + Math.random().toString(36).substr(2, 5);
+    attachInlineAudioControls({
+      container: actions,
+      ownerId: msgId,
+      getText: () => messageText,
+      showCopy: true,
+      showPrint: false
     });
 
-    const listenBtn = document.createElement("button");
-    listenBtn.type = "button";
-    listenBtn.className = "chat-bubble-action-btn";
-    listenBtn.innerHTML = "<span>🔊</span> Listen";
-
-    const speedSelect = document.createElement("select");
-    speedSelect.className = "chat-bubble-speed-select";
-    speedSelect.title = "Audio Playback Speed";
-    [
-      { label: "0.75x", val: 0.75 },
-      { label: "1x", val: 1.0, selected: true },
-      { label: "1.25x", val: 1.25 },
-      { label: "1.5x", val: 1.5 },
-      { label: "2x", val: 2.0 }
-    ].forEach((opt) => {
-      const option = document.createElement("option");
-      option.value = opt.val;
-      option.textContent = opt.label;
-      if (opt.selected) option.selected = true;
-      speedSelect.appendChild(option);
-    });
-
-    listenBtn.addEventListener("click", () => {
-      const selectedRate = parseFloat(speedSelect.value) || 1.0;
-      speakTextWithSpeechNormalizer(messageText, listenBtn, selectedRate, speedSelect);
-    });
-
-    speedSelect.addEventListener("change", () => {
-      const newRate = parseFloat(speedSelect.value) || 1.0;
-      if (window.speechSynthesis && window.speechSynthesis.speaking && activeSpeechState.btnElement === listenBtn) {
-        speakTextWithSpeechNormalizer(messageText, listenBtn, newRate, speedSelect);
-      }
-    });
-
-    actions.appendChild(copyBtn);
-    actions.appendChild(listenBtn);
-    actions.appendChild(speedSelect);
     bubble.appendChild(actions);
   }
 
@@ -852,6 +1127,7 @@ function connectChatComposer() {
 
   if (chatClearBtn) {
     chatClearBtn.addEventListener("click", async () => {
+      stopAllSpeechAudio();
       if (!currentPdfId) return;
       if (!confirm("Clear this entire chat history?")) return;
       try {
@@ -908,24 +1184,33 @@ let summaryCache = {
 function connectSummarySegmentedBar() {
   document.querySelectorAll(".segmented-mode-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
+      stopAllSpeechAudio();
       document.querySelectorAll(".segmented-mode-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      const type = btn.getAttribute("data-summary-type");
+      const type = btn.getAttribute("data-summary-type") || btn.getAttribute("data-mode") || "quick";
       runSummary(type);
     });
   });
 }
 
 async function runSummary(summaryType = "quick") {
+  stopAllSpeechAudio();
+
   if (summaryCache[summaryType]) {
-    renderSummaryOutput(summaryCache[summaryType], summaryType);
+    renderSummaryOutput(summaryCache[summaryType].answer, summaryType, summaryCache[summaryType].coverage);
     return;
+  }
+
+  if (summaryAudioBar) {
+    summaryAudioBar.style.display = "none";
+    summaryAudioBar.innerHTML = "";
   }
 
   summaryContent.innerHTML = `
     <div style="padding: 24px; text-align: center; color: #6366f1;">
       <span style="font-size: 24px; display: block; margin-bottom: 8px;">⏳</span>
-      <p style="font-size: 13.5px; font-weight: 600;">Generating structured ${summaryType} summary...</p>
+      <p style="font-size: 13.5px; font-weight: 600;">Synthesizing full-document ${summaryType} summary...</p>
+      <p style="font-size: 12px; color: #64748b; margin-top: 4px;">Analyzing all pages and intermediate section digests...</p>
     </div>
   `;
 
@@ -940,8 +1225,11 @@ async function runSummary(summaryType = "quick") {
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || "Failed to generate summary.");
 
-    summaryCache[summaryType] = data.answer;
-    renderSummaryOutput(data.answer, summaryType);
+    summaryCache[summaryType] = {
+      answer: data.answer,
+      coverage: data.coverage
+    };
+    renderSummaryOutput(data.answer, summaryType, data.coverage);
 
   } catch (error) {
     summaryContent.innerHTML = `
@@ -952,10 +1240,33 @@ async function runSummary(summaryType = "quick") {
   }
 }
 
-function renderSummaryOutput(markdownText, type) {
+function renderSummaryOutput(markdownText, type, coverage = null) {
   summaryContent.innerHTML = formatMarkdown(markdownText);
 
-  // Attach action bar (Copy & Print/Export)
+  // Render sticky audio bar inside the pinned header
+  if (summaryAudioBar) {
+    summaryAudioBar.style.display = "flex";
+    summaryAudioBar.innerHTML = "";
+
+    attachInlineAudioControls({
+      container: summaryAudioBar,
+      ownerId: "summary-" + type,
+      getText: () => markdownText,
+      showCopy: true,
+      showPrint: true
+    });
+
+    if (coverage && coverage.totalPages) {
+      const badge = document.createElement("span");
+      badge.className = "summary-coverage-badge";
+      const rangeStr = coverage.pageRangesCovered || ("1–" + coverage.totalPages);
+      const batchStr = coverage.batchesProcessed ? ` (${coverage.batchesProcessed} sections synthesized)` : "";
+      badge.innerHTML = `✓ Pages ${rangeStr}${batchStr}`;
+      summaryAudioBar.appendChild(badge);
+    }
+  }
+
+  // Attach action bar (Copy & Print/Export) at bottom of content
   const exportBar = document.createElement("div");
   exportBar.style.display = "flex";
   exportBar.style.gap = "8px";
@@ -1168,6 +1479,7 @@ function switchAiView(viewName) {
 }
 
 async function handleStudyTool(tool) {
+  stopAllSpeechAudio();
   setActiveStudyTool(tool);
 
   if (tool === "view") {
@@ -1277,54 +1589,9 @@ async function initializeReadAloud() {
   readAloudPanel.hidden = false;
 }
 
-function speakTextWithSpeechNormalizer(rawText, btnElement, requestedRate = 1.0, speedSelect = null) {
-  if (!("speechSynthesis" in window)) return;
-
+function speakTextWithSpeechNormalizer(rawText, btnElement, requestedRate = 1.0) {
   const rate = typeof requestedRate === "number" ? requestedRate : 1.0;
-
-  // Handle active speech
-  if (window.speechSynthesis.speaking) {
-    const isSameButton = activeSpeechState.btnElement === btnElement;
-    window.speechSynthesis.cancel();
-
-    if (activeSpeechState.btnElement) {
-      activeSpeechState.btnElement.innerHTML = "<span>🔊</span> Listen";
-    }
-
-    // If student clicked the same button that was speaking (and not changing speed), stop and exit
-    if (isSameButton && !speedSelect) {
-      activeSpeechState = { rawText: "", btnElement: null, speedSelect: null, utterance: null };
-      return;
-    }
-  }
-
-  const cleanText = window.StudyReaderSpeechNormalizer
-    ? window.StudyReaderSpeechNormalizer.normalize(rawText)
-    : rawText.replace(/[*#`_>-]/g, " ").replace(/\s+/g, " ");
-
-  const utterance = new SpeechSynthesisUtterance(cleanText);
-  utterance.rate = Math.max(0.5, Math.min(2.0, rate));
-
-  activeSpeechState = {
-    rawText,
-    btnElement,
-    speedSelect,
-    utterance
-  };
-
-  if (btnElement) btnElement.innerHTML = "<span>⏹</span> Stop";
-
-  const onFinish = () => {
-    if (activeSpeechState.btnElement === btnElement) {
-      activeSpeechState = { rawText: "", btnElement: null, speedSelect: null, utterance: null };
-    }
-    if (btnElement) btnElement.innerHTML = "<span>🔊</span> Listen";
-  };
-
-  utterance.onend = onFinish;
-  utterance.onerror = onFinish;
-
-  window.speechSynthesis.speak(utterance);
+  StudyReaderInlineSpeech.play("legacy-" + Date.now(), rawText, rate);
 }
 
 /* ============================================================

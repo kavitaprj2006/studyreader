@@ -270,12 +270,16 @@
 
         <!-- VIEW 2: STRUCTURED SUMMARIES -->
         <div id="ai-summary-view" class="ai-tool-view" hidden>
-          <div class="segmented-mode-bar">
-            <button type="button" class="segmented-mode-btn active" data-summary-type="quick">⚡ Quick (3-Bullet)</button>
-            <button type="button" class="segmented-mode-btn" data-summary-type="detailed">📑 Detailed</button>
-            <button type="button" class="segmented-mode-btn" data-summary-type="takeaways">🎯 Exam Sheet</button>
+          <div class="summary-sticky-header">
+            <div class="segmented-mode-bar">
+              <button type="button" class="segmented-mode-btn active" data-summary-type="quick">⚡ Quick (3-Bullet)</button>
+              <button type="button" class="segmented-mode-btn" data-summary-type="detailed">📑 Detailed</button>
+              <button type="button" class="segmented-mode-btn" data-summary-type="takeaways">🎯 Exam Sheet</button>
+            </div>
+            <!-- Summary Audio Controls & Export Action Bar -->
+            <div id="summary-audio-bar" class="summary-audio-bar" style="display: none;"></div>
           </div>
-          <div id="summary-content" class="document-ai-answer"></div>
+          <div id="summary-content" class="document-ai-answer summary-scroll-area"></div>
         </div>
 
       </aside>

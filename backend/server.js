@@ -2213,7 +2213,8 @@ app.post(
         mode,
         question: effectiveQuestion,
         pages,
-        summaryType
+        summaryType,
+        documentId: req.params.id
       });
 
       return res.status(200).json({

@@ -376,7 +376,247 @@ async function callGeminiApi({ apiKey, prompt, _retryCount = 0 }) {
   return text.trim();
 }
 
-async function answer({ mode, question = "", text = "", pages = [], history = [], summaryType = "" }) {
+// Intermediate section digest cache: documentId/contentKey -> { totalPages, extractedPages, emptyPages, batchesProcessed, pageRangesCovered, combinedDigest, timestamp }
+const intermediateDigestCache = new Map();
+
+async function mapConcurrent(items, fn, limit = 3) {
+  const results = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (idx < items.length) {
+      const currentIdx = idx++;
+      results[currentIdx] = await fn(items[currentIdx], currentIdx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function buildReducePrompt(summaryType, totalPages, combinedDigest) {
+  if (summaryType === "quick") {
+    return `You are an academic tutor preparing an executive 3-bullet summary of a complete academic document containing ${totalPages} pages.
+You must synthesize the full scope from the intermediate section digests below, ensuring the beginning, middle, and end of the document are all represented.
+
+Intermediate Section Digests Across Entire Document (Pages 1 to ${totalPages}):
+${combinedDigest}
+
+CRITICAL CONSTRAINTS:
+1. Output EXACTLY 3 bullet points, each starting with '* '.
+2. Do NOT output any title, introductory greetings, preamble (e.g., do NOT write "Here is the 3-bullet summary"), or concluding remarks.
+3. Distribution:
+   - Bullet 1 must capture the foundational concepts, definitions, and motivations from the beginning of the document (cites initial pages, e.g. [Pages 1–15]).
+   - Bullet 2 must capture the core mechanisms, methods, formal rules, or frameworks from the middle of the document (cites middle pages).
+   - Bullet 3 must capture the advanced applications, theorems, conclusions, and synthesis from the final sections of the document (cites final pages up to [Page ${totalPages}]).
+4. Each bullet must be dense, clear, academically precise, and include accurate bracketed page citations based strictly on the section digests.`;
+  }
+
+  if (summaryType === "takeaways") {
+    return `You are an academic professor preparing a high-yield exam revision sheet of a complete academic document across all ${totalPages} pages.
+Synthesize the intermediate section digests below into an actionable revision sheet.
+
+Intermediate Section Digests Across Entire Document (Pages 1 to ${totalPages}):
+${combinedDigest}
+
+CRITICAL SUBJECT-ADAPTIVE RULES:
+1. Adapt the structure strictly to the subject matter of the document. Ground all questions and revision points strictly in the source material across all sections (Pages 1 to ${totalPages}).
+2. Do NOT include conversational greetings, preambles, or concluding filler. Start immediately with the first section heading.
+3. Structure:
+   ## 🎯 Essential Terms & Core Definitions
+   (Dense bulleted list of examinable terminology and definitions spanning the entire document, citing [Page X]).
+
+   (Include ONLY if formal laws, formulas, or equations appear in the source)
+   ## 📐 Key Formulas, Principles & Laws
+   (Mathematical formulas, formal inference rules, or scientific laws with explanations).
+
+   (Include ONLY if comparisons or distinctions appear in the source)
+   ## ⚖️ Crucial Distinctions & Comparisons
+   (A clean markdown table contrasting key models, paradigms, or techniques).
+
+   ## 📝 High-Probability Exam Questions & Model Answers
+   (4 to 6 realistic exam questions spanning the beginning, middle, and end of the document. Each question must have a concise, accurate model answer grounded entirely in the material, with [Page X] citations).`;
+  }
+
+  // Default: Detailed summary
+  return `You are an academic professor providing a comprehensive, in-depth academic study breakdown across all ${totalPages} pages of this document.
+Synthesize the intermediate section digests below into a coherent, structured study guide.
+
+Intermediate Section Digests Across Entire Document (Pages 1 to ${totalPages}):
+${combinedDigest}
+
+CRITICAL FORMATTING CONSTRAINTS:
+1. Organize into structured markdown sections using clear headings on their own lines:
+   ## 1. Foundational Concepts & Background
+   ## 2. Core Methodologies, Principles & Formalisms
+   ## 3. Advanced Topics & Specialized Applications
+   ## 4. Key Takeaways & Synthesis
+2. Ensure thorough coverage of the entire document trajectory from Page 1 to Page ${totalPages}.
+3. Bold key terms and maintain an objective, academic tone.
+4. Include accurate bracketed page citations (e.g. [Page X] or [Pages X–Y]) grounded in the provided digests.
+5. Do NOT output greetings, conversational filler, or preambles. Start directly with the first section heading.`;
+}
+
+async function generateHierarchicalSummary({ pages = [], text = "", summaryType = "quick", documentId = null, apiKey }) {
+  let readablePages = [];
+  let totalPages = 0;
+  let emptyPages = 0;
+
+  if (Array.isArray(pages) && pages.length > 0) {
+    totalPages = pages.length;
+    pages.forEach((p, idx) => {
+      const pageText = String(p.text || "").trim();
+      const pageNum = typeof p.pageNumber === "number" ? p.pageNumber : (idx + 1);
+      if (pageText) {
+        readablePages.push({
+          pageNumber: pageNum,
+          slideNumber: typeof p.slideNumber === "number" ? p.slideNumber : null,
+          sectionNumber: typeof p.sectionNumber === "number" ? p.sectionNumber : null,
+          text: pageText
+        });
+      } else {
+        emptyPages++;
+      }
+    });
+  } else if (text && String(text).trim()) {
+    const raw = String(text).trim();
+    const chunkSize = 10000;
+    let offset = 0;
+    let pNum = 1;
+    while (offset < raw.length) {
+      readablePages.push({
+        pageNumber: pNum++,
+        text: raw.slice(offset, offset + chunkSize)
+      });
+      offset += chunkSize;
+    }
+    totalPages = readablePages.length;
+  }
+
+  if (readablePages.length === 0) {
+    throw new Error("No readable pages extracted from the document.");
+  }
+
+  const cacheKey = documentId ? `doc-${documentId}` : `hash-${readablePages.length}-${readablePages[0].text.slice(0, 40)}`;
+
+  let intermediateData = intermediateDigestCache.get(cacheKey);
+
+  if (!intermediateData) {
+    const batches = [];
+    let currentBatch = [];
+    let currentChars = 0;
+    const MAX_BATCH_PAGES = 8;
+    const MAX_BATCH_CHARS = 16000;
+
+    readablePages.forEach((page) => {
+      const pageLen = page.text.length;
+      if (
+        currentBatch.length >= MAX_BATCH_PAGES ||
+        (currentChars + pageLen > MAX_BATCH_CHARS && currentBatch.length >= 3)
+      ) {
+        batches.push(currentBatch);
+        currentBatch = [page];
+        currentChars = pageLen;
+      } else {
+        currentBatch.push(page);
+        currentChars += pageLen;
+      }
+    });
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    const batchDigests = await mapConcurrent(batches, async (batch) => {
+      const startPage = batch[0].pageNumber;
+      const endPage = batch[batch.length - 1].pageNumber;
+      const isSlide = batch[0].slideNumber != null;
+      const unitLabel = isSlide ? "Slide" : "Page";
+      const range = startPage === endPage ? `${unitLabel} ${startPage}` : `${unitLabel}s ${startPage}–${endPage}`;
+      const batchText = batch.map((p) => `[${unitLabel} ${p.pageNumber || p.slideNumber || p.sectionNumber}]\n${p.text}`).join("\n\n");
+
+      const mapPrompt = `You are an academic researcher creating an accurate, high-density factual digest of a textbook or slide section.
+Coverage: ${range} of ${totalPages} total ${unitLabel.toLowerCase()}s.
+
+Document Section Excerpts:
+${batchText}
+
+Task:
+Synthesize a concise, factually dense academic digest of this specific section (${range}).
+Requirements:
+1. Cover all core concepts, definitions, formal models, algorithms, or theorems introduced in these pages.
+2. Label specific concepts with their exact page citation from the excerpt header, e.g. [${unitLabel} ${startPage}].
+3. If formulas, inference rules, comparisons, or architectures appear, include their exact formulations.
+4. Keep the digest concise and high-yield (approx 200–350 words).
+5. Output ONLY the factual digest. Do NOT include greetings, preambles, or conversational filler.`;
+
+      const digest = await callGeminiApi({ apiKey, prompt: mapPrompt });
+      return { range, startPage, endPage, digest };
+    }, 3);
+
+    const combinedDigest = batchDigests
+      .map((b) => `=== Section (${b.range}) ===\n${b.digest}`)
+      .join("\n\n");
+
+    const firstPage = readablePages[0].pageNumber;
+    const lastPage = readablePages[readablePages.length - 1].pageNumber;
+
+    intermediateData = {
+      totalPages,
+      extractedPages: readablePages.length,
+      emptyPages,
+      batchesProcessed: batches.length,
+      pageRangesCovered: `${firstPage}–${lastPage}`,
+      batchDigests,
+      combinedDigest,
+      timestamp: Date.now()
+    };
+
+    if (intermediateDigestCache.size > 50) {
+      const oldestKey = intermediateDigestCache.keys().next().value;
+      intermediateDigestCache.delete(oldestKey);
+    }
+    intermediateDigestCache.set(cacheKey, intermediateData);
+  }
+
+  const reducePrompt = buildReducePrompt(summaryType, intermediateData.totalPages, intermediateData.combinedDigest);
+  const synthesizedAnswer = await callGeminiApi({ apiKey, prompt: reducePrompt });
+
+  const sources = (intermediateData.batchDigests || []).map((b, idx) => ({
+    chunkId: idx + 1,
+    pageRange: b.range,
+    pageNumber: b.startPage,
+    preview: b.digest.slice(0, 180)
+  }));
+
+  return {
+    answer: synthesizedAnswer,
+    sources,
+    coverage: {
+      totalPages: intermediateData.totalPages,
+      extractedPages: intermediateData.extractedPages,
+      emptyPages: intermediateData.emptyPages,
+      batchesProcessed: intermediateData.batchesProcessed,
+      pageRangesCovered: intermediateData.pageRangesCovered,
+      synthesisCompleted: true
+    },
+    provider: "gemini"
+  };
+}
+
+async function answer({ mode, question = "", text = "", pages = [], history = [], summaryType = "", documentId = null }) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    throw new Error("GEMINI_API_KEY is not configured in backend/.env. Please provide a valid Gemini API key to enable AI tutoring.");
+  }
+
+  if (mode === "summary") {
+    return generateHierarchicalSummary({
+      pages,
+      text,
+      summaryType,
+      documentId,
+      apiKey
+    });
+  }
+
   const inputSource = Array.isArray(pages) && pages.length > 0 ? pages : text;
   const chunks = createChunks(inputSource);
 
@@ -399,11 +639,6 @@ async function answer({ mode, question = "", text = "", pages = [], history = []
 
   const prompt = buildPrompt(mode, question, selectedChunks, history, { summaryType });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || !apiKey.trim()) {
-    throw new Error("GEMINI_API_KEY is not configured in backend/.env. Please provide a valid Gemini API key to enable AI tutoring.");
-  }
-
   const geminiResponse = await callGeminiApi({
     apiKey,
     prompt
@@ -422,5 +657,7 @@ module.exports = {
   selectRelevantChunks,
   retrieveRelevantChunks,
   buildPrompt,
-  callGeminiApi
+  callGeminiApi,
+  generateHierarchicalSummary,
+  intermediateDigestCache
 };
