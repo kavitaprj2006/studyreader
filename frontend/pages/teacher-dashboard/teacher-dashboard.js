@@ -215,14 +215,8 @@ function renderClassroomsList(classrooms) {
           </div>
         </div>
 
-        <div class="classroom-actions-row">
-          <button type="button" class="btn-sm secondary-button btn-add-subject" data-class-id="${c.id}">
-            <span>+</span> Add Subject
-          </button>
-          <button type="button" class="btn-sm secondary-button btn-upload-mat" data-class-id="${c.id}">
-            <span>↑</span> Upload Material
-          </button>
-          <button type="button" class="btn-sm primary-button" style="background:#2563eb; margin-left:auto;" onclick="window.location.href='../library/index.html?classroomId=${c.id}'">
+        <div class="classroom-actions-row" style="margin-top: 14px;">
+          <button type="button" class="btn-sm primary-button" style="background: #2563eb; color: #fff; width: 100%; justify-content: center; padding: 9px 16px; font-weight: 600; font-size: 13px;" onclick="window.location.href='../library/index.html?classroomId=${c.id}'">
             Open Space →
           </button>
         </div>
