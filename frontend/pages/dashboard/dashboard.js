@@ -139,6 +139,9 @@ async function loadDashboardData() {
     // Render Subjects
     renderSubjectsGrid();
 
+    // Render Enrolled Classrooms
+    renderEnrolledClassroomsGrid();
+
     // Render Recent Materials
     renderRecentMaterials();
 
@@ -205,6 +208,85 @@ function renderSubjectsGrid() {
       </article>
     `;
   }).join("");
+}
+
+// ============================================================
+// RENDER ENROLLED CLASSROOMS GRID
+// ============================================================
+
+function renderEnrolledClassroomsGrid() {
+  const emptyState = document.getElementById("classrooms-empty-state");
+  const grid = document.getElementById("enrolled-classrooms-grid");
+
+  if (!studentClassrooms || studentClassrooms.length === 0) {
+    if (emptyState) emptyState.style.display = "block";
+    if (grid) grid.style.display = "none";
+    return;
+  }
+
+  if (emptyState) emptyState.style.display = "none";
+  if (!grid) return;
+
+  grid.style.display = "grid";
+  grid.innerHTML = studentClassrooms.map((c) => {
+    const semInfo = [
+      c.semester ? `Semester ${c.semester}` : "",
+      c.section ? `Section ${c.section}` : ""
+    ].filter(Boolean).join(" · ");
+
+    return `
+      <article class="subject-card" style="cursor: default;">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+          <div class="folder-icon-wrapper blue">
+            🏛
+          </div>
+          <span class="subject-pill classroom">
+            ${escapeHTML(c.code)}
+          </span>
+        </div>
+
+        <div style="margin-top: 8px;">
+          <h3 class="subject-title" style="margin: 0 0 4px 0;">${escapeHTML(c.name)}</h3>
+          <p class="subject-teacher" style="margin: 0; font-size: 12px; color: var(--text-secondary);">
+            ${c.teacherName ? `Instructor: Prof. ${escapeHTML(c.teacherName)}` : "Classroom Group"}
+          </p>
+          <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">
+            ${escapeHTML(semInfo || "General Section")}
+          </div>
+        </div>
+
+        <div class="subject-stats" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-light, #f1f5f9);">
+          <span>${c.subjectCount || 0} Subjects</span>
+          <span>·</span>
+          <span>${c.resourceCount || 0} Materials</span>
+        </div>
+
+        <div style="display: flex; gap: 8px; margin-top: 12px;">
+          <button type="button" class="btn-sm primary-button" style="flex: 1; padding: 6px 10px; font-size: 12px; background: #2563eb; color: #fff;" onclick="window.location.href='../library/index.html?classroomId=${c.id}'">
+            Open Space →
+          </button>
+          <button type="button" class="btn-sm secondary-button btn-leave-classroom" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}" style="padding: 6px 10px; font-size: 12px; color: #dc2626; border-color: #fecaca; background: #fef2f2; cursor: pointer;">
+            Leave
+          </button>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  // Attach Leave button handlers
+  grid.querySelectorAll(".btn-leave-classroom").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const classId = btn.getAttribute("data-class-id");
+      const className = btn.getAttribute("data-class-name");
+
+      const targetIdInput = document.getElementById("leave-classroom-target-id");
+      const targetNameEl = document.getElementById("leave-classroom-target-name");
+      if (targetIdInput) targetIdInput.value = classId;
+      if (targetNameEl) targetNameEl.textContent = `"${className}"`;
+      openModal("modal-leave-classroom-confirm");
+    });
+  });
 }
 
 // ============================================================
@@ -440,7 +522,9 @@ if (uploadStudentDocForm) {
 // BUTTON ATTACHMENTS
 // ============================================================
 
-const joinButtons = document.querySelectorAll("#btn-join-classroom, #btn-quick-join, #btn-empty-join, #quick-join-class");
+const joinButtons = document.querySelectorAll(
+  "#btn-join-classroom, #btn-quick-join, #btn-empty-join, #quick-join-class, #btn-header-join-class, #btn-empty-join-classroom"
+);
 joinButtons.forEach((btn) => {
   btn.addEventListener("click", () => openModal("modal-join-classroom"));
 });
@@ -456,21 +540,47 @@ uploadDocButtons.forEach((btn) => {
 });
 
 // ============================================================
-// LOGOUT
+// LEAVE CLASSROOM MODAL HANDLERS
 // ============================================================
 
-const logoutBtn = document.getElementById("logout");
-if (logoutBtn) {
-  logoutBtn.addEventListener("click", async () => {
+const confirmLeaveBtn = document.getElementById("btn-confirm-leave");
+if (confirmLeaveBtn) {
+  confirmLeaveBtn.addEventListener("click", async () => {
+    const classId = document.getElementById("leave-classroom-target-id").value;
+    if (!classId) return;
+
+    confirmLeaveBtn.disabled = true;
+    confirmLeaveBtn.textContent = "Leaving...";
+
     try {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, {
+      const res = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(classId)}/leave`, {
         method: "POST",
         credentials: "include"
       });
-      window.location.href = "../login/index.html";
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Failed to leave classroom.");
+      }
+
+      closeModal("modal-leave-classroom-confirm");
+      showToast(data.message || "Successfully left the classroom.");
+      await loadDashboardData();
+
     } catch (err) {
-      console.error("Logout error:", err);
+      console.error("Leave classroom error:", err);
+      alert(err.message || "An error occurred while leaving the classroom.");
+    } finally {
+      confirmLeaveBtn.disabled = false;
+      confirmLeaveBtn.textContent = "Leave Classroom";
     }
+  });
+}
+
+const cancelLeaveBtn = document.getElementById("btn-cancel-leave");
+if (cancelLeaveBtn) {
+  cancelLeaveBtn.addEventListener("click", () => {
+    closeModal("modal-leave-classroom-confirm");
   });
 }
 

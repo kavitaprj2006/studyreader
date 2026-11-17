@@ -310,6 +310,53 @@
     </div>
   </dialog>
 
+  <!-- Modal: Rename Classroom -->
+  <dialog id="modal-rename-classroom" class="sr-modal">
+    <div class="modal-box" style="max-width: 440px;">
+      <div class="modal-head">
+        <h3>Rename Classroom</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-rename-classroom">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-rename-classroom">
+          <input type="hidden" id="input-rename-class-id">
+          <div class="form-group">
+            <label for="input-rename-class-name">Classroom Title</label>
+            <input type="text" id="input-rename-class-name" placeholder="e.g. Computer Science Engineering" required minlength="2" maxlength="150">
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-sm" data-close-modal="modal-rename-classroom">Cancel</button>
+            <button type="submit" id="btn-submit-rename-classroom" class="btn-sm primary">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Delete Classroom Confirmation -->
+  <dialog id="modal-delete-classroom-confirm" class="sr-modal">
+    <div class="modal-box" style="max-width: 440px; text-align: center;">
+      <div class="modal-head" style="justify-content: flex-end; border-bottom: none; padding-bottom: 0;">
+        <button type="button" class="modal-close-btn" data-close-modal="modal-delete-classroom-confirm">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 0 16px 20px 16px;">
+        <div style="font-size: 38px; margin-bottom: 8px;">🗑️</div>
+        <h3 style="font-size: 19px; font-weight: 700; margin-bottom: 8px; color: #0f172a;">Delete Classroom?</h3>
+        <p style="font-size: 14px; color: #64748b; line-height: 1.5; margin-bottom: 8px;">
+          Are you sure you want to delete <strong id="delete-classroom-target-name" style="color: #0f172a;">this classroom</strong>?
+        </p>
+        <p style="font-size: 12px; color: #ef4444; margin-bottom: 24px; background: #fef2f2; padding: 8px 12px; border-radius: 6px; border: 1px solid #fee2e2;">
+          ⚠️ This will remove the classroom and its subject spaces from your dashboard and from all enrolled students.
+        </p>
+        <input type="hidden" id="delete-classroom-target-id">
+        <div style="display: flex; gap: 12px; justify-content: center;">
+          <button type="button" class="action-btn" id="btn-cancel-delete-classroom" style="width: auto; padding: 10px 22px; cursor: pointer;">Cancel</button>
+          <button type="button" class="action-btn" id="btn-confirm-delete-classroom" style="width: auto; padding: 10px 22px; background: #dc2626; color: #ffffff; border-color: #dc2626; font-weight: 600; cursor: pointer;">Delete Classroom</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Modal: Upload Material -->
   <dialog id="modal-upload-resource" class="sr-modal">
     <div class="modal-box">
@@ -427,6 +474,8 @@
   <!-- Scripts -->
   <script src="../../scripts/config.js"></script>
   <script src="../../scripts/navigation.js"></script>
+  <script src="../../scripts/notifications.js"></script>
+  <script src="../../scripts/search.js"></script>
   <script src="../../scripts/duplicate-upload.js"></script>
   <script src="teacher-dashboard.js"></script>
 

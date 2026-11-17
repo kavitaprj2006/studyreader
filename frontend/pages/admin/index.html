@@ -187,6 +187,8 @@
 
   <script src="../../scripts/config.js"></script>
   <script src="../../scripts/navigation.js"></script>
+  <script src="../../scripts/notifications.js"></script>
+  <script src="../../scripts/search.js"></script>
   <script>
     const API_BASE_URL = window.API_BASE_URL || "http://127.0.0.1:3000";
 
@@ -276,11 +278,6 @@
       div.textContent = str ?? "";
       return div.innerHTML;
     }
-
-    document.getElementById("logout").addEventListener("click", async () => {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
-      window.location.href = "../login/index.html";
-    });
 
     checkAdmin();
   </script>

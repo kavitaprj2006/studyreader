@@ -946,7 +946,7 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
 
       return res.status(401).json({
         success: false,
-        message: "You must be logged in to upload a PDF."
+        message: "You must be logged in to upload a document."
       });
     }
 
@@ -1056,7 +1056,7 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
       return res.status(409).json({
         success: false,
         duplicate: true,
-        message: "A PDF with this filename already exists.",
+        message: "A document with this filename already exists.",
         pendingUpload: {
           filename: req.file.filename,
           originalFilename: req.file.originalname,
@@ -1177,6 +1177,18 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         category: pdf.category
       });
 
+      // Notify enrolled students if uploaded to a classroom
+      if (classroomId) {
+        notifyClassroomStudents(
+          Number(classroomId),
+          `New ${category === 'pyq' ? 'PYQ' : 'Material'} Available`,
+          `"${pdf.original_filename}" was uploaded to your classroom materials.`,
+          "material_added"
+        ).catch((notifErr) => {
+          console.warn("[Upload] Could not broadcast student notifications:", notifErr.message);
+        });
+      }
+
       // In serverless environments, attempt immediate processing within bounded budget
       if (process.env.VERCEL || req.query.processNow === "true") {
         try {
@@ -1239,7 +1251,7 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Unable to upload PDF."
+      message: error?.message ? `Unable to upload document: ${error.message}` : "Unable to upload document."
     });
   }
 });
@@ -1436,6 +1448,18 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
         fileSize: pdf.file_size,
         category: pdf.category
       });
+
+      // Notify enrolled students if uploaded to a classroom
+      if (classroomId) {
+        notifyClassroomStudents(
+          Number(classroomId),
+          `New ${category === 'pyq' ? 'PYQ' : 'Material'} Available`,
+          `"${pdf.original_filename}" was uploaded to your classroom materials.`,
+          "material_added"
+        ).catch((notifErr) => {
+          console.warn("[Upload] Could not broadcast student notifications:", notifErr.message);
+        });
+      }
 
       // In serverless environments, attempt immediate processing within bounded budget
       if (process.env.VERCEL || req.query.processNow === "true") {
@@ -2794,10 +2818,10 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
         document.original_filename || document.filename
       );
 
-    if (fileType !== "docx" && fileType !== "pptx") {
+    if (fileType !== "pdf" && fileType !== "docx" && fileType !== "pptx") {
       return res.status(415).json({
         success: false,
-        message: "Text extraction is only available for DOCX and PPTX files."
+        message: "This document format is not supported for text extraction."
       });
     }
 
@@ -3274,6 +3298,153 @@ app.post("/api/classrooms", requireAuth, requireRole(["teacher", "admin"]), asyn
     return res.status(500).json({
       success: false,
       message: "Unable to create classroom."
+    });
+  }
+});
+
+// 1b. Update / Rename Classroom (Teacher or Admin)
+const handleUpdateClassroom = async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+    const { name, semester, section, description } = req.body;
+
+    const classCheck = await pool.query(
+      "SELECT id, teacher_id, name, is_archived FROM classrooms WHERE id = $1",
+      [classroomId]
+    );
+
+    if (classCheck.rows.length === 0 || classCheck.rows[0].is_archived) {
+      return res.status(404).json({
+        success: false,
+        message: "Classroom not found."
+      });
+    }
+
+    const classroom = classCheck.rows[0];
+
+    // Authorization check: Must be the teacher owner or admin
+    if (req.user.role !== "admin" && String(classroom.teacher_id) !== String(req.user.id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to update this classroom."
+      });
+    }
+
+    // Name validation
+    let newName = classroom.name;
+    if (name !== undefined) {
+      if (typeof name !== "string" || name.trim().length < 2) {
+        return res.status(400).json({
+          success: false,
+          message: "Classroom name must be at least 2 characters long."
+        });
+      }
+      if (name.trim().length > 150) {
+        return res.status(400).json({
+          success: false,
+          message: "Classroom name cannot exceed 150 characters."
+        });
+      }
+      newName = name.trim();
+    }
+
+    const result = await pool.query(
+      `UPDATE classrooms
+       SET name = $1,
+           semester = COALESCE($2, semester),
+           section = COALESCE($3, section),
+           description = COALESCE($4, description),
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING id, name, code, semester, section, description, updated_at`,
+      [
+        newName,
+        semester !== undefined ? (semester ? String(semester).trim() : null) : null,
+        section !== undefined ? (section ? String(section).trim() : null) : null,
+        description !== undefined ? (description ? String(description).trim() : null) : null,
+        classroomId
+      ]
+    );
+
+    const updated = result.rows[0];
+
+    await logAnalyticsEvent(req.user.id, "classroom_updated", "classrooms", classroomId, {
+      name: updated.name
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Classroom updated successfully.",
+      classroom: updated
+    });
+  } catch (error) {
+    console.error("Update classroom error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update classroom."
+    });
+  }
+};
+
+app.patch("/api/classrooms/:id", requireAuth, requireRole(["teacher", "admin"]), handleUpdateClassroom);
+app.put("/api/classrooms/:id", requireAuth, requireRole(["teacher", "admin"]), handleUpdateClassroom);
+
+// 1c. Delete / Archive Classroom (Teacher Owner or Admin)
+app.delete("/api/classrooms/:id", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
+  try {
+    const classroomId = req.params.id;
+
+    const classCheck = await pool.query(
+      "SELECT id, teacher_id, name, is_archived FROM classrooms WHERE id = $1",
+      [classroomId]
+    );
+
+    if (classCheck.rows.length === 0 || classCheck.rows[0].is_archived) {
+      return res.status(404).json({
+        success: false,
+        message: "Classroom not found."
+      });
+    }
+
+    const classroom = classCheck.rows[0];
+
+    // Authorization check: Must be the teacher owner or admin
+    if (req.user.role !== "admin" && String(classroom.teacher_id) !== String(req.user.id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to delete this classroom."
+      });
+    }
+
+    // Soft delete / archive classroom and its linked records
+    await pool.query(
+      "UPDATE classrooms SET is_archived = TRUE, updated_at = NOW() WHERE id = $1",
+      [classroomId]
+    );
+
+    await pool.query(
+      "UPDATE classroom_subjects SET is_archived = TRUE WHERE classroom_id = $1",
+      [classroomId]
+    );
+
+    await pool.query(
+      "UPDATE pdfs SET is_archived = TRUE WHERE classroom_id = $1 AND access_scope = 'classroom'",
+      [classroomId]
+    );
+
+    await logAnalyticsEvent(req.user.id, "classroom_deleted", "classrooms", classroomId, {
+      name: classroom.name
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Classroom deleted successfully."
+    });
+  } catch (error) {
+    console.error("Delete classroom error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to delete classroom."
     });
   }
 });
@@ -4326,6 +4497,349 @@ app.post("/api/admin/users/:id/approve", requireAuth, requireRole(["admin"]), as
     return res.status(500).json({ success: false, message: "Unable to update approval status." });
   }
 });
+
+// ============================================================
+// NOTIFICATIONS SYSTEM (PostgreSQL primary + optional Firestore)
+// ============================================================
+
+async function createNotification(userId, classroomId, title, message, type = "announcement") {
+  try {
+    const res = await pool.query(
+      `INSERT INTO notifications (user_id, classroom_id, title, message, type, is_read, created_at)
+       VALUES ($1, $2, $3, $4, $5, FALSE, CURRENT_TIMESTAMP)
+       RETURNING id, user_id, classroom_id, title, message, type, is_read, created_at`,
+      [userId, classroomId || null, title, message, type]
+    );
+
+    const notif = res.rows[0];
+
+    // Optional realtime mirror to Firestore if initialized
+    try {
+      const admin = global.firebaseAdmin || null;
+      if (admin && admin.apps && admin.apps.length > 0) {
+        const firestore = admin.firestore();
+        await firestore.collection("users").doc(String(userId)).collection("notifications").doc(String(notif.id)).set({
+          id: notif.id,
+          classroomId: notif.classroom_id,
+          title: notif.title,
+          message: notif.message,
+          type: notif.type,
+          isRead: false,
+          createdAt: notif.created_at
+        });
+      }
+    } catch (_) {}
+
+    return notif;
+  } catch (err) {
+    console.error("[Notifications] Failed to create notification:", err.message);
+    return null;
+  }
+}
+
+async function notifyClassroomStudents(classroomId, title, message, type = "material_added") {
+  try {
+    const members = await pool.query(
+      "SELECT student_id FROM classroom_members WHERE classroom_id = $1",
+      [classroomId]
+    );
+    for (const row of members.rows) {
+      await createNotification(row.student_id, classroomId, title, message, type);
+    }
+  } catch (err) {
+    console.error("[Notifications] Failed to notify classroom students:", err.message);
+  }
+}
+
+// 1. Get Notifications for Current User
+app.get("/api/notifications", requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 30, 100);
+    const notificationsResult = await pool.query(
+      `SELECT n.id, n.user_id, n.classroom_id, n.title, n.message, n.type, n.is_read, n.created_at,
+              c.name as classroom_name
+       FROM notifications n
+       LEFT JOIN classrooms c ON n.classroom_id = c.id
+       WHERE n.user_id = $1
+       ORDER BY n.created_at DESC
+       LIMIT $2`,
+      [req.user.id, limit]
+    );
+
+    const unreadResult = await pool.query(
+      `SELECT COUNT(*)::int as unread_count
+       FROM notifications
+       WHERE user_id = $1 AND is_read = FALSE`,
+      [req.user.id]
+    );
+
+    const unreadCount = unreadResult.rows[0]?.unread_count || 0;
+
+    return res.status(200).json({
+      success: true,
+      notifications: notificationsResult.rows.map((n) => ({
+        id: n.id,
+        classroomId: n.classroom_id,
+        classroomName: n.classroom_name,
+        title: n.title,
+        message: n.message,
+        type: n.type,
+        isRead: n.is_read,
+        createdAt: n.created_at
+      })),
+      unreadCount
+    });
+  } catch (error) {
+    console.error("Get notifications error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve notifications."
+    });
+  }
+});
+
+// 2. Mark Single Notification as Read
+app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
+  try {
+    const notifId = req.params.id;
+    const result = await pool.query(
+      `UPDATE notifications
+       SET is_read = TRUE
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, is_read`,
+      [notifId, req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification marked as read."
+    });
+  } catch (error) {
+    console.error("Mark notification read error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to mark notification as read."
+    });
+  }
+});
+
+// 3. Mark All Notifications as Read
+app.post("/api/notifications/mark-all-read", requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE notifications
+       SET is_read = TRUE
+       WHERE user_id = $1 AND is_read = FALSE`,
+      [req.user.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "All notifications marked as read."
+    });
+  } catch (error) {
+    console.error("Mark all notifications read error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to mark notifications as read."
+    });
+  }
+});
+
+// ============================================================
+// GLOBAL UNIFIED SEARCH API (Role-Scoped & Secure)
+// ============================================================
+app.get("/api/search", requireAuth, async (req, res) => {
+  try {
+    const query = (req.query.q || "").trim();
+
+    if (!query || query.length < 2) {
+      return res.status(200).json({
+        success: true,
+        query,
+        results: { classrooms: [], subjects: [], documents: [] },
+        total: 0
+      });
+    }
+
+    const searchTerm = `%${query}%`;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    let classrooms = [];
+    let subjects = [];
+    let documents = [];
+
+    if (userRole === "admin") {
+      const classRes = await pool.query(
+        `SELECT id, name, code, semester, section
+         FROM classrooms
+         WHERE is_archived = FALSE AND (name ILIKE $1 OR code ILIKE $1)
+         ORDER BY name ASC LIMIT 10`,
+        [searchTerm]
+      );
+      classrooms = classRes.rows;
+
+      const subRes = await pool.query(
+        `SELECT s.id, s.name, s.code, c.id as classroom_id, c.name as classroom_name
+         FROM subjects s
+         LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+         LEFT JOIN classrooms c ON cs.classroom_id = c.id
+         WHERE s.name ILIKE $1 OR s.code ILIKE $1
+         ORDER BY s.name ASC LIMIT 10`,
+        [searchTerm]
+      );
+      subjects = subRes.rows;
+
+      const docRes = await pool.query(
+        `SELECT p.id, p.filename, p.original_filename, p.category, p.classroom_id, p.subject_id,
+                c.name as classroom_name, s.name as subject_name
+         FROM pdfs p
+         LEFT JOIN classrooms c ON p.classroom_id = c.id
+         LEFT JOIN subjects s ON p.subject_id = s.id
+         WHERE p.is_archived = FALSE AND (p.original_filename ILIKE $1 OR p.filename ILIKE $1)
+         ORDER BY p.created_at DESC LIMIT 15`,
+        [searchTerm]
+      );
+      documents = docRes.rows;
+
+    } else if (userRole === "teacher") {
+      const classRes = await pool.query(
+        `SELECT id, name, code, semester, section
+         FROM classrooms
+         WHERE teacher_id = $1 AND is_archived = FALSE AND (name ILIKE $2 OR code ILIKE $2)
+         ORDER BY name ASC LIMIT 10`,
+        [userId, searchTerm]
+      );
+      classrooms = classRes.rows;
+
+      const subRes = await pool.query(
+        `SELECT DISTINCT s.id, s.name, s.code, c.id as classroom_id, c.name as classroom_name
+         FROM subjects s
+         JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+         JOIN classrooms c ON cs.classroom_id = c.id
+         WHERE c.teacher_id = $1 AND (s.name ILIKE $2 OR s.code ILIKE $2)
+         ORDER BY s.name ASC LIMIT 10`,
+        [userId, searchTerm]
+      );
+      subjects = subRes.rows;
+
+      const docRes = await pool.query(
+        `SELECT p.id, p.filename, p.original_filename, p.category, p.classroom_id, p.subject_id,
+                c.name as classroom_name, s.name as subject_name
+         FROM pdfs p
+         LEFT JOIN classrooms c ON p.classroom_id = c.id
+         LEFT JOIN subjects s ON p.subject_id = s.id
+         WHERE p.is_archived = FALSE
+           AND (p.user_id = $1 OR c.teacher_id = $1)
+           AND (p.original_filename ILIKE $2 OR p.filename ILIKE $2)
+         ORDER BY p.created_at DESC LIMIT 15`,
+        [userId, searchTerm]
+      );
+      documents = docRes.rows;
+
+    } else {
+      // Student: only enrolled classrooms, subjects in enrolled classrooms, and accessible documents
+      const classRes = await pool.query(
+        `SELECT c.id, c.name, c.code, c.semester, c.section, u.name as teacher_name
+         FROM classrooms c
+         JOIN users u ON c.teacher_id = u.id
+         JOIN classroom_members cm ON c.id = cm.classroom_id AND cm.student_id = $1
+         WHERE c.is_archived = FALSE AND (c.name ILIKE $2 OR c.code ILIKE $2)
+         ORDER BY c.name ASC LIMIT 10`,
+        [userId, searchTerm]
+      );
+      classrooms = classRes.rows;
+
+      const subRes = await pool.query(
+        `SELECT DISTINCT s.id, s.name, s.code, c.id as classroom_id, c.name as classroom_name
+         FROM subjects s
+         LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+         LEFT JOIN classrooms c ON cs.classroom_id = c.id
+         LEFT JOIN classroom_members cm ON c.id = cm.classroom_id AND cm.student_id = $1
+         LEFT JOIN student_subjects ss ON s.id = ss.subject_id AND ss.student_id = $1
+         WHERE (cm.student_id = $1 OR ss.student_id = $1)
+           AND (s.name ILIKE $2 OR s.code ILIKE $2)
+         ORDER BY s.name ASC LIMIT 10`,
+        [userId, searchTerm]
+      );
+      subjects = subRes.rows;
+
+      const docRes = await pool.query(
+        `SELECT p.id, p.filename, p.original_filename, p.category, p.classroom_id, p.subject_id,
+                c.name as classroom_name, s.name as subject_name
+         FROM pdfs p
+         LEFT JOIN classrooms c ON p.classroom_id = c.id
+         LEFT JOIN subjects s ON p.subject_id = s.id
+         WHERE p.is_archived = FALSE
+           AND (
+             p.user_id = $1
+             OR (
+               p.access_scope = 'classroom'
+               AND p.classroom_id IN (
+                 SELECT classroom_id FROM classroom_members WHERE student_id = $1
+               )
+             )
+           )
+           AND (p.original_filename ILIKE $2 OR p.filename ILIKE $2)
+         ORDER BY p.created_at DESC LIMIT 15`,
+        [userId, searchTerm]
+      );
+      documents = docRes.rows;
+    }
+
+    const total = classrooms.length + subjects.length + documents.length;
+
+    return res.status(200).json({
+      success: true,
+      query,
+      results: {
+        classrooms: classrooms.map(c => ({
+          id: c.id,
+          name: c.name,
+          code: c.code,
+          semester: c.semester,
+          section: c.section,
+          teacherName: c.teacher_name
+        })),
+        subjects: subjects.map(s => ({
+          id: s.id,
+          name: s.name,
+          code: s.code,
+          classroomId: s.classroom_id,
+          classroomName: s.classroom_name
+        })),
+        documents: documents.map(d => ({
+          id: d.id,
+          filename: d.filename,
+          originalFilename: d.original_filename,
+          fileType: getFileType(d.original_filename || d.filename),
+          category: d.category,
+          classroomId: d.classroom_id,
+          classroomName: d.classroom_name,
+          subjectId: d.subject_id,
+          subjectName: d.subject_name
+        }))
+      },
+      total
+    });
+
+  } catch (error) {
+    console.error("Global search error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "An error occurred while executing search."
+    });
+  }
+});
+
 // ============================================================
 // Start Server
 // ============================================================

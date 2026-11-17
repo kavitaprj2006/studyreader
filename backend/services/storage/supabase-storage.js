@@ -98,7 +98,11 @@ class SupabaseStorageService {
             name: this.bucketName,
             public: false,
             file_size_limit: 52428800,
-            allowed_mime_types: ["application/pdf"]
+            allowed_mime_types: [
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ]
           })
         });
         if (createRes.ok) {

@@ -131,14 +131,56 @@
   }
 
   /* ============================================================
-     4. UNIFIED LOGOUT CONTROLLER
+     4. UNIFIED LOGOUT CONTROLLER WITH CONFIRMATION
      ============================================================ */
-  function initLogout() {
-    const logoutButtons = document.querySelectorAll("#logout, .btn-logout-action");
-    logoutButtons.forEach((btn) => {
-      btn.addEventListener("click", async () => {
+  function ensureLogoutModal() {
+    let modal = document.getElementById("modal-logout-confirm");
+    if (!modal) {
+      modal = document.createElement("dialog");
+      modal.id = "modal-logout-confirm";
+      modal.className = "sr-modal";
+      modal.innerHTML = `
+        <div class="modal-box" style="max-width: 420px; text-align: center;">
+          <div class="modal-head" style="justify-content: flex-end; border-bottom: none; padding-bottom: 0;">
+            <button type="button" class="modal-close-btn" data-close-modal="modal-logout-confirm">&times;</button>
+          </div>
+          <div class="modal-body" style="padding: 0 16px 20px 16px;">
+            <div style="font-size: 40px; margin-bottom: 12px;">🚪</div>
+            <h3 style="font-size: 19px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary, #0f172a);">Log Out of StudyReader?</h3>
+            <p style="font-size: 14px; color: var(--text-secondary, #64748b); line-height: 1.5; margin-bottom: 24px;">Are you sure you want to log out? You will need to sign back in to access your enrolled classrooms and study materials.</p>
+            <div style="display: flex; gap: 12px; justify-content: center;">
+              <button type="button" class="action-btn" id="btn-cancel-logout" style="width: auto; padding: 10px 22px; cursor: pointer;">Cancel</button>
+              <button type="button" class="action-btn" id="btn-confirm-logout" style="width: auto; padding: 10px 22px; background: #dc2626; color: #ffffff; border-color: #dc2626; font-weight: 600; cursor: pointer;">Log Out</button>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      // Wire close & cancel
+      modal.querySelector("[data-close-modal]").addEventListener("click", () => closeModal("modal-logout-confirm"));
+      modal.querySelector("#btn-cancel-logout").addEventListener("click", () => closeModal("modal-logout-confirm"));
+
+      // Click outside backdrop to close
+      modal.addEventListener("click", (e) => {
+        const rect = modal.getBoundingClientRect();
+        const isInDialog =
+          rect.top <= e.clientY &&
+          e.clientY <= rect.top + rect.height &&
+          rect.left <= e.clientX &&
+          e.clientX <= rect.left + rect.width;
+        if (!isInDialog) {
+          modal.close();
+        }
+      });
+
+      // Wire confirm logout
+      modal.querySelector("#btn-confirm-logout").addEventListener("click", async () => {
+        const btn = modal.querySelector("#btn-confirm-logout");
+        btn.disabled = true;
+        btn.textContent = "Logging out...";
         try {
-          const apiBase = window.API_BASE_URL || "http://127.0.0.1:3000";
+          const apiBase = window.API_BASE_URL || (window.location.origin.includes(":5500") ? "http://127.0.0.1:3000" : "");
           await fetch(`${apiBase}/api/auth/logout`, {
             method: "POST",
             credentials: "include"
@@ -147,6 +189,18 @@
           // Proceed with redirect regardless of network state
         }
         window.location.href = "../login/index.html";
+      });
+    }
+    return modal;
+  }
+
+  function initLogout() {
+    const logoutButtons = document.querySelectorAll("#logout, .btn-logout-action, .logout-button");
+    logoutButtons.forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        ensureLogoutModal();
+        openModal("modal-logout-confirm");
       });
     });
   }

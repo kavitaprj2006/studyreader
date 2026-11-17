@@ -167,11 +167,36 @@ function renderClassroomsList(classrooms) {
             <h3 class="classroom-card-title">${escapeHTML(c.name)}</h3>
             <div class="classroom-card-meta">${escapeHTML(semInfo || "General Section")}</div>
           </div>
-          <div>
+          <div style="display: flex; align-items: center; gap: 8px;">
             <button type="button" class="classroom-code-pill" data-copy-code="${escapeHTML(c.code)}" title="Click to copy join code">
               <span>Code: ${escapeHTML(c.code)}</span>
               <span class="copy-icon">📋</span>
             </button>
+
+            <!-- 3-DOT CONTEXT MENU -->
+            <div class="classroom-menu-wrapper">
+              <button type="button" class="btn-classroom-menu-toggle" data-menu-target="menu-${c.id}" aria-label="Classroom options" title="More options">
+                ⋮
+              </button>
+              <div id="menu-${c.id}" class="classroom-menu-dropdown">
+                <button type="button" class="classroom-menu-item btn-add-subject" data-class-id="${c.id}">
+                  <span>➕</span> Add Subject
+                </button>
+                <button type="button" class="classroom-menu-item btn-upload-mat" data-class-id="${c.id}">
+                  <span>📤</span> Upload Material
+                </button>
+                <button type="button" class="classroom-menu-item btn-view-roster" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}" data-class-code="${escapeHTML(c.code)}">
+                  <span>👥</span> View Roster
+                </button>
+                <button type="button" class="classroom-menu-item btn-rename-classroom" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}">
+                  <span>✏️</span> Rename Classroom
+                </button>
+                <div class="classroom-menu-divider"></div>
+                <button type="button" class="classroom-menu-item danger-item btn-delete-classroom" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}">
+                  <span>🗑️</span> Delete Classroom
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -196,9 +221,6 @@ function renderClassroomsList(classrooms) {
           </button>
           <button type="button" class="btn-sm secondary-button btn-upload-mat" data-class-id="${c.id}">
             <span>↑</span> Upload Material
-          </button>
-          <button type="button" class="btn-sm secondary-button btn-view-roster" data-class-id="${c.id}" data-class-name="${escapeHTML(c.name)}" data-class-code="${escapeHTML(c.code)}">
-            <span>👥</span> View Roster
           </button>
           <button type="button" class="btn-sm primary-button" style="background:#2563eb; margin-left:auto;" onclick="window.location.href='../library/index.html?classroomId=${c.id}'">
             Open Space →
@@ -256,7 +278,70 @@ function connectClassroomCardActions() {
       openRosterModal(classId, className, classCode);
     });
   });
+
+  // 5. Rename classroom buttons
+  document.querySelectorAll(".btn-rename-classroom").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const classId = btn.getAttribute("data-class-id");
+      const className = btn.getAttribute("data-class-name");
+      const idInput = document.getElementById("input-rename-class-id");
+      const nameInput = document.getElementById("input-rename-class-name");
+      if (idInput) idInput.value = classId;
+      if (nameInput) {
+        nameInput.value = className;
+        setTimeout(() => nameInput.focus(), 100);
+      }
+      openModal("modal-rename-classroom");
+    });
+  });
+
+  // 6. Delete classroom buttons
+  document.querySelectorAll(".btn-delete-classroom").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const classId = btn.getAttribute("data-class-id");
+      const className = btn.getAttribute("data-class-name");
+      const idInput = document.getElementById("delete-classroom-target-id");
+      const nameEl = document.getElementById("delete-classroom-target-name");
+      if (idInput) idInput.value = classId;
+      if (nameEl) nameEl.textContent = `"${className}"`;
+      openModal("modal-delete-classroom-confirm");
+    });
+  });
+
+  // 7. 3-dot menu toggle
+  document.querySelectorAll(".btn-classroom-menu-toggle").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const targetId = btn.getAttribute("data-menu-target");
+      const dropdown = document.getElementById(targetId);
+
+      // Close other open menus
+      document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
+        if (d !== dropdown) d.classList.remove("show");
+      });
+
+      if (dropdown) {
+        dropdown.classList.toggle("show");
+      }
+    });
+  });
+
+  // Close dropdown menu when clicking any menu action
+  document.querySelectorAll(".classroom-menu-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
+        d.classList.remove("show");
+      });
+    });
+  });
 }
+
+// Global click to close 3-dot menus
+document.addEventListener("click", () => {
+  document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
+    d.classList.remove("show");
+  });
+});
 
 function populateClassroomSelects() {
   const subjectClassSel = document.getElementById("select-subject-classroom");
@@ -350,6 +435,102 @@ if (createClassForm) {
       console.error("Create classroom error:", err);
       alert("An error occurred while creating the classroom.");
     }
+  });
+}
+
+// ============================================================
+// RENAME CLASSROOM FORM
+// ============================================================
+
+const renameClassForm = document.getElementById("form-rename-classroom");
+if (renameClassForm) {
+  renameClassForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const id = document.getElementById("input-rename-class-id").value;
+    const name = document.getElementById("input-rename-class-name").value.trim();
+
+    if (!name || name.length < 2) {
+      alert("Classroom name must be at least 2 characters long.");
+      return;
+    }
+
+    const btn = document.getElementById("btn-submit-rename-classroom");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Saving...";
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Failed to rename classroom.");
+      }
+
+      closeModal("modal-rename-classroom");
+      showToast(data.message || "Classroom renamed successfully!");
+      await loadClassrooms();
+
+    } catch (err) {
+      console.error("Rename classroom error:", err);
+      alert(err.message || "An error occurred while renaming the classroom.");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Save Changes";
+      }
+    }
+  });
+}
+
+// ============================================================
+// DELETE CLASSROOM CONFIRMATION HANDLERS
+// ============================================================
+
+const confirmDeleteClassBtn = document.getElementById("btn-confirm-delete-classroom");
+if (confirmDeleteClassBtn) {
+  confirmDeleteClassBtn.addEventListener("click", async () => {
+    const classId = document.getElementById("delete-classroom-target-id")?.value;
+    if (!classId) return;
+
+    confirmDeleteClassBtn.disabled = true;
+    confirmDeleteClassBtn.textContent = "Deleting...";
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/classrooms/${encodeURIComponent(classId)}`, {
+        method: "DELETE",
+        credentials: "include"
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Failed to delete classroom.");
+      }
+
+      closeModal("modal-delete-classroom-confirm");
+      showToast(data.message || "Classroom deleted successfully!");
+      await loadClassrooms();
+
+    } catch (err) {
+      console.error("Delete classroom error:", err);
+      alert(err.message || "An error occurred while deleting the classroom.");
+    } finally {
+      confirmDeleteClassBtn.disabled = false;
+      confirmDeleteClassBtn.textContent = "Delete Classroom";
+    }
+  });
+}
+
+const cancelDeleteClassBtn = document.getElementById("btn-cancel-delete-classroom");
+if (cancelDeleteClassBtn) {
+  cancelDeleteClassBtn.addEventListener("click", () => {
+    closeModal("modal-delete-classroom-confirm");
   });
 }
 
@@ -631,25 +812,6 @@ uploadResourceButtons.forEach((btn) => {
     openModal("modal-upload-resource");
   });
 });
-
-// ============================================================
-// LOGOUT
-// ============================================================
-
-const logoutBtn = document.getElementById("logout");
-if (logoutBtn) {
-  logoutBtn.addEventListener("click", async () => {
-    try {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, {
-        method: "POST",
-        credentials: "include"
-      });
-      window.location.href = "../login/index.html";
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
-  });
-}
 
 // Helpers
 function escapeHTML(str) {

@@ -687,18 +687,5 @@ function connectUploadForm() {
   }
 }
 
-// ============================================================
-// LOGOUT
-// ============================================================
-
-document.getElementById("logout")?.addEventListener("click", async () => {
-  try {
-    await fetch(`${API_BASE_URL}/api/auth/logout`, { method: "POST", credentials: "include" });
-    window.location.href = "../login/index.html";
-  } catch (err) {
-    console.error("Logout error:", err);
-  }
-});
-
 initLibrary();
 })();
