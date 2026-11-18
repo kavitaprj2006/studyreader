@@ -86,6 +86,13 @@ async function loadUser() {
       roleBadge.textContent = data.user.role === "teacher" ? "Teacher" : (data.user.role === "admin" ? "Admin" : "Student");
     }
 
+    if (data.user.role === "teacher") {
+      const navDash = document.getElementById("nav-dashboard");
+      const navClass = document.getElementById("nav-classrooms");
+      if (navDash) navDash.href = "../teacher-dashboard/index.html";
+      if (navClass) navClass.href = "../teacher-dashboard/index.html?view=classrooms";
+    }
+
     return true;
   } catch (err) {
     console.error("Auth error:", err);

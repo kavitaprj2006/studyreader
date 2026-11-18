@@ -31,12 +31,12 @@
 
       <nav class="sidebar-nav">
 
-        <a href="index.html" class="nav-item active">
+        <a href="index.html" class="nav-item active" id="nav-dashboard">
           <span class="nav-icon">⌂</span>
           <span class="nav-label">Dashboard</span>
         </a>
 
-        <a href="index.html" class="nav-item" id="nav-classrooms">
+        <a href="index.html?view=classrooms" class="nav-item" id="nav-classrooms">
           <span class="nav-icon">🏛</span>
           <span class="nav-label">My Classrooms</span>
         </a>
@@ -174,114 +174,46 @@
         </section>
 
 
-        <!-- MAIN TWO-COLUMN DASHBOARD GRID -->
+        <!-- MAIN TWO-COLUMN DASHBOARD GRID (UPPER ROW: SUBJECTS & QUICK ACTIONS) -->
 
         <div class="dashboard-grid-layout">
 
-          <!-- LEFT COLUMN: MY SUBJECTS & RECENT MATERIALS -->
+          <!-- MY SUBJECTS -->
 
-          <div style="display: flex; flex-direction: column; gap: 24px;">
+          <section class="dashboard-card" id="section-my-subjects">
 
-            <!-- MY SUBJECTS -->
-
-            <section class="dashboard-card">
-
-              <div class="card-header">
-                <div>
-                  <h2>My Subjects</h2>
-                  <p>Semester classrooms and personalized subject spaces</p>
-                </div>
-
-                <a href="../library/index.html" class="view-all-link">
-                  View All →
-                </a>
+            <div class="card-header">
+              <div>
+                <h2>My Subjects</h2>
+                <p>Semester classrooms and personalized subject spaces</p>
               </div>
 
-              <!-- Empty State -->
-              <div class="empty-state" id="subjects-empty-state">
-                <span class="empty-icon">📂</span>
-                <h3>No subjects added yet</h3>
-                <p>
-                  Join a classroom using the 6-character code provided by your instructor, or create a personal subject space to organize your study notes.
-                </p>
-                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 16px;">
-                  <button id="btn-empty-join" class="action-btn primary" style="width: auto; padding: 10px 18px;">
-                    + Join Classroom
-                  </button>
-                  <button id="btn-empty-subject" class="action-btn" style="width: auto; padding: 10px 18px;">
-                    + Add Subject
-                  </button>
-                </div>
-              </div>
+              <a href="../library/index.html" class="view-all-link">
+                View All →
+              </a>
+            </div>
 
-              <!-- Subject Cards Grid -->
-              <div id="subjects-grid" class="subjects-grid" style="display: none;"></div>
-
-            </section>
-
-
-            <!-- ENROLLED CLASSROOMS -->
-
-            <section class="dashboard-card" id="section-enrolled-classrooms">
-
-              <div class="card-header">
-                <div>
-                  <h2>Enrolled Classrooms</h2>
-                  <p>Semester batches and lecture groups you have joined</p>
-                </div>
-
-                <button type="button" class="view-all-link" id="btn-header-join-class" style="background: none; border: none; cursor: pointer; color: var(--accent-primary, #2563eb); font-weight: 600;">
-                  + Join with Code
+            <!-- Empty State -->
+            <div class="empty-state" id="subjects-empty-state">
+              <span class="empty-icon">📂</span>
+              <h3>No subjects added yet</h3>
+              <p>
+                Join a classroom using the 6-character code provided by your instructor, or create a personal subject space to organize your study notes.
+              </p>
+              <div style="display: flex; gap: 10px; justify-content: center; margin-top: 16px;">
+                <button id="btn-empty-join" class="action-btn primary" style="width: auto; padding: 10px 18px;">
+                  + Join Classroom
+                </button>
+                <button id="btn-empty-subject" class="action-btn" style="width: auto; padding: 10px 18px;">
+                  + Add Subject
                 </button>
               </div>
+            </div>
 
-              <!-- Empty State -->
-              <div class="empty-state" id="classrooms-empty-state">
-                <span class="empty-icon">🏛</span>
-                <h3>No classrooms joined yet</h3>
-                <p>
-                  Enter the 6-character code provided by your instructor to access batch lecture slides, notes, and past year question papers.
-                </p>
-                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 16px;">
-                  <button id="btn-empty-join-classroom" class="action-btn primary" style="width: auto; padding: 10px 18px;">
-                    + Join Classroom
-                  </button>
-                </div>
-              </div>
+            <!-- Subject Cards Grid -->
+            <div id="subjects-grid" class="subjects-grid" style="display: none;"></div>
 
-              <!-- Enrolled Classrooms Grid -->
-              <div id="enrolled-classrooms-grid" class="subjects-grid" style="display: none;"></div>
-
-            </section>
-
-
-            <!-- RECENT MATERIALS -->
-
-            <section class="dashboard-card">
-
-              <div class="card-header">
-                <div>
-                  <h2>Recent Materials</h2>
-                  <p>Latest notes, slides, and PYQs available to you</p>
-                </div>
-
-                <a href="../library/index.html" class="view-all-link">
-                  Browse All →
-                </a>
-              </div>
-
-              <div id="recent-materials-container">
-                <div class="empty-state" id="recent-empty-state">
-                  <span class="empty-icon">📄</span>
-                  <h3>No materials yet</h3>
-                  <p>Classroom resources published by teachers and personal uploads will appear here.</p>
-                </div>
-                <div id="recent-materials-list" style="display: none; display: flex; flex-direction: column; gap: 10px;"></div>
-              </div>
-
-            </section>
-
-          </div>
+          </section>
 
 
           <!-- RIGHT COLUMN: QUICK ACTIONS CARD -->
@@ -313,6 +245,74 @@
             </div>
 
           </aside>
+
+        </div>
+
+
+        <!-- SECOND ROW: ENROLLED CLASSROOMS & RECENT MATERIALS SIDE-BY-SIDE -->
+
+        <div class="dashboard-secondary-grid">
+
+          <!-- ENROLLED CLASSROOMS (LARGER SHARE) -->
+
+          <section class="dashboard-card" id="section-enrolled-classrooms">
+
+            <div class="card-header">
+              <div>
+                <h2>Enrolled Classrooms</h2>
+                <p>Semester batches and lecture groups you have joined</p>
+              </div>
+
+              <button type="button" class="view-all-link" id="btn-header-join-class" style="background: none; border: none; cursor: pointer; color: var(--accent-primary, #2563eb); font-weight: 600;">
+                + Join with Code
+              </button>
+            </div>
+
+            <!-- Empty State -->
+            <div class="empty-state" id="classrooms-empty-state">
+              <span class="empty-icon">🏛</span>
+              <h3>No classrooms joined yet</h3>
+              <p>
+                Enter the 6-character code provided by your instructor to access batch lecture slides, notes, and past year question papers.
+              </p>
+              <div style="display: flex; gap: 10px; justify-content: center; margin-top: 16px;">
+                <button id="btn-empty-join-classroom" class="action-btn primary" style="width: auto; padding: 10px 18px;">
+                  + Join Classroom
+                </button>
+              </div>
+            </div>
+
+            <!-- Enrolled Classrooms Grid -->
+            <div id="enrolled-classrooms-grid" class="subjects-grid" style="display: none;"></div>
+
+          </section>
+
+
+          <!-- RECENT MATERIALS (RIGHT COLUMN) -->
+
+          <section class="dashboard-card" id="section-recent-materials">
+
+            <div class="card-header">
+              <div>
+                <h2>Recent Materials</h2>
+                <p>Latest notes, slides, and PYQs available to you</p>
+              </div>
+
+              <a href="../library/index.html" class="view-all-link">
+                Browse All →
+              </a>
+            </div>
+
+            <div id="recent-materials-container">
+              <div class="empty-state" id="recent-empty-state">
+                <span class="empty-icon">📄</span>
+                <h3>No materials yet</h3>
+                <p>Classroom resources published by teachers and personal uploads will appear here.</p>
+              </div>
+              <div id="recent-materials-list" style="display: none; display: flex; flex-direction: column; gap: 10px;"></div>
+            </div>
+
+          </section>
 
         </div>
 

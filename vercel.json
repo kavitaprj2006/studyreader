@@ -20,7 +20,8 @@
     { "source": "/dashboard", "destination": "/frontend/pages/dashboard/index.html", "permanent": false },
     { "source": "/teacher-dashboard", "destination": "/frontend/pages/teacher-dashboard/index.html", "permanent": false },
     { "source": "/library", "destination": "/frontend/pages/library/index.html", "permanent": false },
-    { "source": "/pdf-study", "destination": "/frontend/pages/pdf-study/index.html", "permanent": false }
+    { "source": "/pdf-study", "destination": "/frontend/pages/pdf-study/index.html", "permanent": false },
+    { "source": "/admin", "destination": "/frontend/pages/admin/index.html", "permanent": false }
   ],
   "rewrites": [
     {

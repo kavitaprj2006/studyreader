@@ -89,6 +89,8 @@ async function loadStudent() {
     }
 
     await loadDashboardData();
+    initClassroomNavigation();
+    handleViewRouting();
 
   } catch (err) {
     console.error("Student auth check failed:", err);
@@ -582,6 +584,66 @@ if (cancelLeaveBtn) {
   cancelLeaveBtn.addEventListener("click", () => {
     closeModal("modal-leave-classroom-confirm");
   });
+}
+
+function handleViewRouting() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const view = urlParams.get("view");
+  const hash = window.location.hash;
+  const isClassroomsView = view === "classrooms" || hash === "#classrooms" || hash === "#section-enrolled-classrooms";
+
+  const navDashboard = document.getElementById("nav-dashboard");
+  const navClassrooms = document.getElementById("nav-classrooms");
+  const classroomsSection = document.getElementById("section-enrolled-classrooms");
+
+  if (isClassroomsView) {
+    if (navDashboard) navDashboard.classList.remove("active");
+    if (navClassrooms) navClassrooms.classList.add("active");
+    if (classroomsSection) {
+      setTimeout(() => {
+        classroomsSection.scrollIntoView({ behavior: "smooth", block: "start" });
+        classroomsSection.style.transition = "box-shadow 0.4s ease";
+        classroomsSection.style.boxShadow = "0 0 0 3px rgba(37, 99, 235, 0.35)";
+        setTimeout(() => {
+          classroomsSection.style.boxShadow = "";
+        }, 1800);
+      }, 100);
+    }
+  } else {
+    if (navDashboard) navDashboard.classList.add("active");
+    if (navClassrooms) navClassrooms.classList.remove("active");
+  }
+}
+
+function initClassroomNavigation() {
+  const navClassrooms = document.getElementById("nav-classrooms");
+  if (navClassrooms) {
+    navClassrooms.addEventListener("click", (e) => {
+      const currentPath = window.location.pathname;
+      if (currentPath.endsWith("dashboard/index.html") || currentPath.endsWith("/dashboard")) {
+        e.preventDefault();
+        window.history.pushState({}, "", "index.html?view=classrooms");
+        handleViewRouting();
+      }
+    });
+  }
+
+  const navDashboard = document.getElementById("nav-dashboard");
+  if (navDashboard) {
+    navDashboard.addEventListener("click", (e) => {
+      const currentPath = window.location.pathname;
+      if (currentPath.endsWith("dashboard/index.html") || currentPath.endsWith("/dashboard")) {
+        if (window.location.search.includes("view=classrooms")) {
+          e.preventDefault();
+          window.history.pushState({}, "", "index.html");
+          handleViewRouting();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      }
+    });
+  }
+
+  window.addEventListener("popstate", handleViewRouting);
 }
 
 // Helper functions

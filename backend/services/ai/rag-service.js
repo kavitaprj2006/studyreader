@@ -1,6 +1,7 @@
 const MAX_CHUNK_LENGTH = 1600;
 const MAX_CONTEXT_CHUNKS = 6;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const aiProviderRouter = require("./ai-provider-router");
 
 const STOP_WORDS = new Set([
   "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -310,70 +311,12 @@ ${personaInstruction}
 }
 
 async function callGeminiApi({ apiKey, prompt, _retryCount = 0 }) {
-  if (!apiKey || !apiKey.trim()) {
-    throw new Error("GEMINI_API_KEY is not configured in backend/.env.");
-  }
-
-  const model = GEMINI_MODEL;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-
-  let response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey.trim()
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 2048
-        }
-      })
-    });
-  } catch (networkErr) {
-    throw new Error(`Failed to reach Gemini API: ${networkErr.message}`);
+    const result = await aiProviderRouter.generateWithFallback({ prompt });
+    return result.text;
+  } catch (err) {
+    throw err;
   }
-
-  if (!response.ok) {
-    if (response.status === 429 && _retryCount < 2) {
-      await new Promise((resolve) => setTimeout(resolve, 4000 * (_retryCount + 1)));
-      return callGeminiApi({ apiKey, prompt, _retryCount: _retryCount + 1 });
-    }
-
-    let errorMessage = `Gemini API responded with status ${response.status}`;
-    try {
-      const errJson = await response.json();
-      if (errJson.error?.message) {
-        errorMessage = errJson.error.message.replace(/key=[^&\s]+/gi, "key=[REDACTED]");
-      }
-    } catch (_) {}
-
-    if (response.status === 400 || response.status === 403) {
-      throw new Error(`Gemini authentication error: ${errorMessage}`);
-    } else if (response.status === 404) {
-      throw new Error(`Gemini model '${model}' not found: ${errorMessage}`);
-    } else if (response.status === 429) {
-      throw new Error(`Gemini rate limit exceeded: ${errorMessage}`);
-    } else {
-      throw new Error(`Gemini service error (${response.status}): ${errorMessage}`);
-    }
-  }
-
-  const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error("Gemini returned an empty response. Please try rephrasing your question.");
-  }
-
-  return text.trim();
 }
 
 // Intermediate section digest cache: documentId/contentKey -> { totalPages, extractedPages, emptyPages, batchesProcessed, pageRangesCovered, combinedDigest, timestamp }
@@ -648,15 +591,19 @@ async function answer({ mode, question = "", text = "", pages = [], history = []
 
   const prompt = buildPrompt(mode, question, selectedChunks, history, { summaryType });
 
-  const geminiResponse = await callGeminiApi({
-    apiKey,
-    prompt
+  const validPages = selectedChunks.map(c => c.pageNumber).filter(Boolean);
+  const aiResult = await aiProviderRouter.generateWithFallback({
+    prompt,
+    requireCitations: mode === "ask-ai" || mode === "explanation",
+    validPages
   });
 
   return {
-    answer: geminiResponse,
+    answer: aiResult.text,
     sources,
-    provider: "gemini"
+    provider: aiResult.provider,
+    model: aiResult.model,
+    fallbackOccurred: aiResult.fallbackOccurred
   };
 }
 
@@ -668,5 +615,6 @@ module.exports = {
   buildPrompt,
   callGeminiApi,
   generateHierarchicalSummary,
-  intermediateDigestCache
+  intermediateDigestCache,
+  aiProviderRouter
 };

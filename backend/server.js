@@ -16,6 +16,10 @@ const piperTtsProvider =
   require("./services/tts/piper-tts-provider");
 const ragService =
   require("./services/ai/rag-service");
+const aiCacheService =
+  require("./services/ai/ai-cache-service");
+const aiProviderRouter =
+  require("./services/ai/ai-provider-router");
 const cloudStorage =
   require("./services/storage/cloud-storage");
 const firebaseStorage = cloudStorage; // Backwards-compatible alias for cloudStorage (Supabase / R2 / Fallback)
@@ -2737,16 +2741,60 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       }
     }
 
-    // 4. Generate AI response with conversation context
-    const aiResult = await ragService.answer({
-      mode: "ask-ai",
-      question: message,
-      pages,
-      selectedChunks,
-      history
-    });
+    // 4. Check persistent answer cache or generate with AI router
+    const contentHash = document.file_hash || document.checksum || `doc-${document.id}`;
+    const chunkIds = (selectedChunks || []).map(c => c.id || c.pageNumber).join("-");
+    const contextFingerprint = aiCacheService.hashString(chunkIds || "full-doc");
 
-    const assistantAnswer = aiResult.answer || "I reviewed the document, but could not produce a specific response.";
+    let cachedAnswer = null;
+    if (!history || history.length <= 1) {
+      cachedAnswer = await aiCacheService.getCachedAnswer({
+        documentId: document.id,
+        question: message,
+        contextFingerprint,
+        contentHash
+      });
+    }
+
+    let assistantAnswer = "";
+    let aiProvider = "gemini";
+    let aiModel = "gemini-3.5-flash-lite";
+    let aiSources = [];
+    let isCached = false;
+
+    if (cachedAnswer) {
+      assistantAnswer = cachedAnswer.text;
+      aiProvider = cachedAnswer.provider;
+      aiModel = cachedAnswer.model;
+      aiSources = cachedAnswer.sources || [];
+      isCached = true;
+    } else {
+      const aiResult = await ragService.answer({
+        mode: "ask-ai",
+        question: message,
+        pages,
+        selectedChunks,
+        history
+      });
+
+      assistantAnswer = aiResult.answer || "I reviewed the document, but could not produce a specific response.";
+      aiProvider = aiResult.provider || "gemini";
+      aiModel = aiResult.model || "gemini";
+      aiSources = aiResult.sources || [];
+
+      if (!history || history.length <= 1) {
+        aiCacheService.setCachedAnswer({
+          documentId: document.id,
+          question: message,
+          contextFingerprint,
+          contentHash,
+          answerText: assistantAnswer,
+          sources: aiSources,
+          model: aiModel,
+          provider: aiProvider
+        }).catch(() => {});
+      }
+    }
 
     // 5. Persist assistant message
     const botMsgResult = await pool.query(
@@ -2761,8 +2809,10 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       success: true,
       userMessage: userMsg,
       assistantMessage: botMsg,
-      sources: aiResult.sources || [],
-      provider: aiResult.provider
+      sources: aiSources,
+      provider: aiProvider,
+      model: aiModel,
+      cached: isCached
     });
 
   } catch (error) {
@@ -3103,6 +3153,33 @@ app.post(
         });
       }
 
+      // Check persistent summary cache
+      const contentHash = document.file_hash || document.checksum || `doc-${document.id}`;
+      if (mode === "summary" || mode === "overview") {
+        const cachedSummary = await aiCacheService.getCachedSummary({
+          documentId: document.id,
+          summaryType: summaryType || "quick",
+          contentHash
+        });
+
+        if (cachedSummary) {
+          return res.status(200).json({
+            success: true,
+            document: {
+              id: req.params.id,
+              originalFilename: document.original_filename
+            },
+            answer: cachedSummary.text,
+            sources: cachedSummary.sources,
+            mode,
+            provider: cachedSummary.provider,
+            model: cachedSummary.model,
+            cached: true,
+            hitCount: cachedSummary.hitCount
+          });
+        }
+      }
+
       let pages = [];
       try {
         const { filePath, isTemp } = await getDocumentLocalPath(document);
@@ -3130,6 +3207,18 @@ app.post(
         summaryType,
         documentId: req.params.id
       });
+
+      if ((mode === "summary" || mode === "overview") && result.answer) {
+        aiCacheService.setCachedSummary({
+          documentId: document.id,
+          summaryType: summaryType || "quick",
+          contentHash,
+          summaryText: result.answer,
+          sources: result.sources,
+          model: result.model || "gemini",
+          provider: result.provider || "gemini"
+        }).catch(() => {});
+      }
 
       return res.status(200).json({
         success: true,
@@ -3214,6 +3303,8 @@ app.delete("/api/pdfs/:id", requireAuth, async (req, res) => {
         }
       }
     }
+
+    await aiCacheService.invalidateDocumentCache(pdfId);
 
     return res.status(200).json({
       success: true,
@@ -4495,6 +4586,204 @@ app.post("/api/admin/users/:id/approve", requireAuth, requireRole(["admin"]), as
   } catch (error) {
     console.error("Admin approve user error:", error);
     return res.status(500).json({ success: false, message: "Unable to update approval status." });
+  }
+});
+
+// Admin AI Provider Status Monitoring
+app.get("/api/admin/ai/status", requireAuth, requireRole(["admin"]), (req, res) => {
+  try {
+    const status = aiProviderRouter.getProviderStatus();
+    return res.status(200).json({
+      success: true,
+      status
+    });
+  } catch (error) {
+    console.error("Admin AI status error:", error);
+    return res.status(500).json({ success: false, message: "Unable to retrieve AI status." });
+  }
+});
+
+// Admin AI Cache Metrics
+app.get("/api/admin/cache/metrics", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const metrics = await aiCacheService.getCacheMetrics();
+    return res.status(200).json({
+      success: true,
+      metrics
+    });
+  } catch (error) {
+    console.error("Admin cache metrics error:", error);
+    return res.status(500).json({ success: false, message: "Unable to retrieve cache metrics." });
+  }
+});
+
+// Admin Academic Management (Classrooms & Subjects)
+app.get("/api/admin/academic", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const classroomsRes = await pool.query(`
+      SELECT
+        c.id, c.name, c.code, c.semester, c.section, c.description, c.is_archived, c.created_at,
+        u.name as teacher_name, u.email as teacher_email,
+        COUNT(DISTINCT cm.student_id)::int as student_count,
+        COUNT(DISTINCT cs.subject_id)::int as subject_count,
+        COUNT(DISTINCT p.id)::int as material_count
+      FROM classrooms c
+      JOIN users u ON c.teacher_id = u.id
+      LEFT JOIN classroom_members cm ON c.id = cm.classroom_id
+      LEFT JOIN classroom_subjects cs ON c.id = cs.classroom_id AND cs.is_archived = FALSE
+      LEFT JOIN pdfs p ON c.id = p.classroom_id AND p.is_archived = FALSE
+      GROUP BY c.id, u.name, u.email
+      ORDER BY c.created_at DESC
+    `);
+
+    const subjectsRes = await pool.query(`
+      SELECT
+        s.id, s.name, s.code, s.description, s.created_at,
+        u.name as creator_name,
+        COUNT(DISTINCT cs.classroom_id)::int as classroom_count,
+        COUNT(DISTINCT p.id)::int as document_count
+      FROM subjects s
+      LEFT JOIN users u ON s.created_by = u.id
+      LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+      LEFT JOIN pdfs p ON s.id = p.subject_id AND p.is_archived = FALSE
+      GROUP BY s.id, u.name
+      ORDER BY s.created_at DESC
+    `);
+
+    return res.status(200).json({
+      success: true,
+      classrooms: classroomsRes.rows,
+      subjects: subjectsRes.rows
+    });
+  } catch (error) {
+    console.error("Admin academic overview error:", error);
+    return res.status(500).json({ success: false, message: "Unable to retrieve academic data." });
+  }
+});
+
+// Admin Document Job Queue Monitoring
+app.get("/api/admin/jobs", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const jobsRes = await pool.query(`
+      SELECT
+        j.id, j.pdf_id, j.job_type, j.status, j.attempts, j.max_attempts,
+        j.progress, j.error_message, j.created_at, j.updated_at,
+        p.filename, p.original_filename
+      FROM document_jobs j
+      LEFT JOIN pdfs p ON j.pdf_id = p.id
+      ORDER BY j.created_at DESC
+      LIMIT 100
+    `);
+
+    return res.status(200).json({
+      success: true,
+      jobs: jobsRes.rows
+    });
+  } catch (error) {
+    console.error("Admin jobs error:", error);
+    return res.status(500).json({ success: false, message: "Unable to retrieve background jobs." });
+  }
+});
+
+// Admin Toggle User Active Status (with self-deactivation protection & audit)
+app.post("/api/admin/users/:id/toggle-status", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.id, 10);
+    if (isNaN(targetId)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID." });
+    }
+
+    if (parseInt(req.user.id, 10) === targetId) {
+      return res.status(400).json({ success: false, message: "Cannot deactivate your own administrator account." });
+    }
+
+    const result = await pool.query(`
+      UPDATE users
+      SET is_active = NOT is_active
+      WHERE id = $1
+      RETURNING id, name, email, role, is_active, is_approved
+    `, [targetId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    const updatedUser = result.rows[0];
+
+    try {
+      await pool.query(`
+        INSERT INTO analytics_events (user_id, event_name, entity_type, entity_id, metadata)
+        VALUES ($1, 'admin_user_status_toggled', 'user', $2, $3)
+      `, [
+        req.user.id,
+        targetId,
+        JSON.stringify({
+          toggled_by: req.user.id,
+          new_is_active: updatedUser.is_active,
+          user_email: updatedUser.email
+        })
+      ]);
+    } catch (auditErr) {
+      console.warn("Audit log insert warning:", auditErr.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `User ${updatedUser.name} status updated to ${updatedUser.is_active ? 'Active' : 'Inactive'}.`,
+      user: updatedUser
+    });
+  } catch (error) {
+    console.error("Admin toggle status error:", error);
+    return res.status(500).json({ success: false, message: "Unable to toggle user active status." });
+  }
+});
+
+// Admin System & Audit Logs
+app.get("/api/admin/logs", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const logsRes = await pool.query(`
+      SELECT
+        a.id, a.user_id, a.event_name, a.entity_type, a.entity_id, a.metadata, a.created_at,
+        u.email as user_email, u.role as user_role
+      FROM analytics_events a
+      LEFT JOIN users u ON a.user_id = u.id
+      ORDER BY a.created_at DESC
+      LIMIT 100
+    `);
+
+    // Sanitize metadata to never leak sensitive data
+    const sanitizedLogs = logsRes.rows.map(log => {
+      let meta = log.metadata;
+      if (meta && typeof meta === "object") {
+        const cleanMeta = { ...meta };
+        delete cleanMeta.password;
+        delete cleanMeta.password_hash;
+        delete cleanMeta.token;
+        delete cleanMeta.apiKey;
+        delete cleanMeta.key;
+        delete cleanMeta.secret;
+        meta = cleanMeta;
+      }
+      return {
+        id: log.id,
+        userId: log.user_id,
+        userEmail: log.user_email || "System",
+        userRole: log.user_role || "system",
+        eventName: log.event_name,
+        entityType: log.entity_type,
+        entityId: log.entity_id,
+        metadata: meta,
+        createdAt: log.created_at
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      logs: sanitizedLogs
+    });
+  } catch (error) {
+    console.error("Admin logs error:", error);
+    return res.status(500).json({ success: false, message: "Unable to retrieve system logs." });
   }
 });
 

@@ -646,6 +646,17 @@ a {
   align-items: start;
 }
 
+/* ============================================================
+   SECOND-ROW DASHBOARD SPLIT GRID (CLASSROOMS & RECENT MATERIALS)
+   ============================================================ */
+.dashboard-secondary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr);
+  gap: 24px;
+  margin-top: 24px;
+  align-items: start;
+}
+
 /* Left / Center Column */
 .dashboard-card {
   background: var(--surface);
@@ -2497,6 +2508,10 @@ dialog.sr-modal::backdrop {
 @media (max-width: 1024px) {
   .dashboard-grid-layout {
     grid-template-columns: 1fr;
+  }
+  .dashboard-secondary-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
   }
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);

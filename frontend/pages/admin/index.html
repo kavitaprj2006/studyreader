@@ -7,27 +7,95 @@
   <title>StudyReader — Admin Portal</title>
   <link rel="stylesheet" href="../../styles/app.css">
   <style>
+    /* Admin Portal Specific Styles */
+    :root {
+      --admin-primary: #dc2626;
+      --admin-primary-soft: #fef2f2;
+      --admin-accent: #2563eb;
+    }
+
+    .admin-nav-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      overflow-x: auto;
+    }
+
+    .admin-tab-btn {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+    }
+
+    .admin-tab-btn:hover {
+      background: var(--surface-soft);
+      color: var(--text);
+    }
+
+    .admin-tab-btn.active {
+      background: var(--surface-soft);
+      color: var(--admin-primary);
+      border-color: rgba(220, 38, 38, 0.2);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+
+    .admin-view-panel {
+      display: none;
+    }
+
+    .admin-view-panel.active {
+      display: block;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     .admin-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 16px;
       font-size: 13px;
       background: #ffffff;
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
     }
+
     .admin-table th,
     .admin-table td {
-      padding: 12px 16px;
+      padding: 12px 14px;
       text-align: left;
       border-bottom: 1px solid var(--border);
+      vertical-align: middle;
     }
+
     .admin-table th {
       background: var(--surface-soft);
       font-weight: 700;
       color: var(--text-secondary);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
+
+    .admin-table tbody tr:hover {
+      background: rgba(248, 250, 252, 0.7);
+    }
+
     .role-badge {
       display: inline-block;
       font-size: 11px;
@@ -41,26 +109,158 @@
     .role-badge.admin { background: #fee2e2; color: #dc2626; }
 
     .status-badge {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       font-size: 11px;
       font-weight: 700;
       padding: 2px 8px;
       border-radius: 6px;
     }
-    .status-badge.approved { background: #eaf8f2; color: #35a979; }
-    .status-badge.pending { background: #fff5e7; color: #e39a3b; }
+    .status-badge.active, .status-badge.ready, .status-badge.approved, .status-badge.completed {
+      background: #eaf8f2; color: #16a34a;
+    }
+    .status-badge.pending, .status-badge.processing {
+      background: #fff5e7; color: #d97706;
+    }
+    .status-badge.inactive, .status-badge.failed, .status-badge.not_configured {
+      background: #fee2e2; color: #dc2626;
+    }
+    .status-badge.cooldown, .status-badge.degraded {
+      background: #fef3c7; color: #b45309;
+    }
 
-    .btn-approve {
+    .btn-action-sm {
       padding: 4px 10px;
       font-size: 11px;
       font-weight: 600;
       border-radius: 6px;
-      border: 1px solid #cbd5e1;
+      border: 1px solid var(--border);
       background: #ffffff;
       cursor: pointer;
+      transition: all 0.15s ease;
     }
-    .btn-approve:hover {
+    .btn-action-sm:hover {
       background: #f1f5f9;
+    }
+    .btn-action-sm.danger:hover {
+      background: #fee2e2;
+      color: #dc2626;
+      border-color: #fca5a5;
+    }
+
+    .filter-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .filter-bar input,
+    .filter-bar select {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      background: #ffffff;
+      outline: none;
+    }
+
+    .filter-bar input:focus,
+    .filter-bar select:focus {
+      border-color: var(--admin-accent);
+    }
+
+    /* AI Provider Matrix Grid */
+    .provider-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .provider-card {
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .provider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .provider-title {
+      font-weight: 700;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .provider-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      background: var(--surface-soft);
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .metric-item span:first-child {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    .metric-item span:last-child {
+      font-weight: 700;
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .code-pill {
+      display: inline-block;
+      font-family: monospace;
+      font-size: 11px;
+      background: #f1f5f9;
+      color: #334155;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* Progress bar */
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: #e2e8f0;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: #2563eb;
+      border-radius: 3px;
+      transition: width 0.3s ease;
+    }
+
+    @media (max-width: 1024px) {
+      .admin-table th, .admin-table td {
+        padding: 8px 10px;
+        font-size: 12px;
+      }
+      .provider-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -73,10 +273,31 @@
         <span>StudyReader Admin</span>
       </div>
       <nav class="sidebar-nav">
-        <a href="index.html" class="nav-item active">
-          <span class="nav-icon">⚙</span>
-          <span>Overview & Metrics</span>
+        <a href="#overview" class="nav-item active" data-tab="overview">
+          <span class="nav-icon">📊</span>
+          <span>Overview</span>
         </a>
+        <a href="#users" class="nav-item" data-tab="users">
+          <span class="nav-icon">👥</span>
+          <span>User Accounts</span>
+        </a>
+        <a href="#academic" class="nav-item" data-tab="academic">
+          <span class="nav-icon">🏛</span>
+          <span>Academic Hub</span>
+        </a>
+        <a href="#ai" class="nav-item" data-tab="ai">
+          <span class="nav-icon">🤖</span>
+          <span>AI Monitoring</span>
+        </a>
+        <a href="#cache" class="nav-item" data-tab="cache">
+          <span class="nav-icon">⚡</span>
+          <span>Cache & Jobs</span>
+        </a>
+        <a href="#logs" class="nav-item" data-tab="logs">
+          <span class="nav-icon">📜</span>
+          <span>Audit Logs</span>
+        </a>
+        <div style="margin: 16px 0; border-top: 1px solid var(--border);"></div>
         <a href="../dashboard/index.html" class="nav-item">
           <span class="nav-icon">🎓</span>
           <span>Student Portal</span>
@@ -98,7 +319,7 @@
       <header class="dashboard-topbar">
         <div class="search-box">
           <span class="search-icon">⌕</span>
-          <input type="search" placeholder="Search users, classrooms, or system logs...">
+          <input type="search" id="global-admin-search" placeholder="Filter current view table in real-time...">
         </div>
         <div class="topbar-actions">
           <div class="user-profile">
@@ -112,75 +333,414 @@
       </header>
 
       <div class="dashboard-content">
-        <section class="welcome-section">
+        <!-- WELCOME SECTION -->
+        <section class="welcome-section" style="margin-bottom: 20px;">
           <div>
-            <p class="eyebrow" style="color: #dc2626;">ADMINISTRATION</p>
+            <p class="eyebrow" style="color: #dc2626;">ADMINISTRATION &amp; GOVERNANCE</p>
             <h1 id="welcome">System Control Center</h1>
-            <p class="welcome-text">Platform activity monitoring, user role management, and institutional administration.</p>
+            <p class="welcome-text">Comprehensive platform telemetry, AI multi-provider routing status, persistent caching, and user governance.</p>
+          </div>
+          <div>
+            <button type="button" class="btn-sm primary-button" onclick="refreshCurrentTab()" style="gap: 6px; background: #dc2626; border-color: #dc2626; color: #fff;">
+              <span>🔄</span> Refresh Data
+            </button>
           </div>
         </section>
 
-        <section class="stats-grid">
-          <article class="stat-card">
-            <div class="stat-icon purple">👥</div>
-            <div>
-              <span class="stat-label">Total Users</span>
-              <strong class="stat-value" id="stat-total-users">-</strong>
-            </div>
-          </article>
-          <article class="stat-card">
-            <div class="stat-icon blue">👨‍🏫</div>
-            <div>
-              <span class="stat-label">Teacher Accounts</span>
-              <strong class="stat-value" id="stat-teachers">-</strong>
-            </div>
-          </article>
-          <article class="stat-card">
-            <div class="stat-icon green">🎓</div>
-            <div>
-              <span class="stat-label">Student Accounts</span>
-              <strong class="stat-value" id="stat-students">-</strong>
-            </div>
-          </article>
-          <article class="stat-card">
-            <div class="stat-icon orange">🏛</div>
-            <div>
-              <span class="stat-label">Active Classrooms</span>
-              <strong class="stat-value" id="stat-classrooms">-</strong>
-            </div>
-          </article>
-        </section>
+        <!-- SUB-NAVIGATION PILLS -->
+        <div class="admin-nav-tabs">
+          <button class="admin-tab-btn active" data-tab="overview">📊 Overview</button>
+          <button class="admin-tab-btn" data-tab="users">👥 Users &amp; Roles</button>
+          <button class="admin-tab-btn" data-tab="academic">🏛 Classrooms &amp; Subjects</button>
+          <button class="admin-tab-btn" data-tab="ai">🤖 AI Multi-Provider Matrix</button>
+          <button class="admin-tab-btn" data-tab="cache">⚡ Cache &amp; Job Queue</button>
+          <button class="admin-tab-btn" data-tab="logs">📜 Audit Logs</button>
+        </div>
 
-        <!-- USERS MANAGEMENT TABLE -->
-        <section class="dashboard-card" style="margin-top: 24px;">
-          <div class="card-header">
-            <div>
-              <h2>User Management</h2>
-              <p>Platform accounts, roles, and authorization status</p>
+        <!-- ========================================== -->
+        <!-- VIEW 1: OVERVIEW & METRICS                -->
+        <!-- ========================================== -->
+        <div id="view-overview" class="admin-view-panel active">
+          <section class="stats-grid">
+            <article class="stat-card">
+              <div class="stat-icon purple">👥</div>
+              <div>
+                <span class="stat-label">Total Users</span>
+                <strong class="stat-value" id="stat-total-users">-</strong>
+              </div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-icon blue">👨‍🏫</div>
+              <div>
+                <span class="stat-label">Teachers</span>
+                <strong class="stat-value" id="stat-teachers">-</strong>
+              </div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-icon green">🎓</div>
+              <div>
+                <span class="stat-label">Students</span>
+                <strong class="stat-value" id="stat-students">-</strong>
+              </div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-icon orange">🏛</div>
+              <div>
+                <span class="stat-label">Classrooms</span>
+                <strong class="stat-value" id="stat-classrooms">-</strong>
+              </div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-icon purple">📚</div>
+              <div>
+                <span class="stat-label">Study Materials</span>
+                <strong class="stat-value" id="stat-materials">-</strong>
+              </div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-icon green">⚡</div>
+              <div>
+                <span class="stat-label">AI Cache Hits</span>
+                <strong class="stat-value" id="stat-cache-saved">-</strong>
+              </div>
+            </article>
+          </section>
+
+          <!-- QUICK SYSTEM SUMMARY CARDS -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 24px;">
+            <div class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>System Health &amp; Storage</h2>
+                  <p>Storage provider and document status</p>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Storage Provider:</span>
+                  <strong id="stat-storage-provider" class="code-pill">Supabase Storage</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Total Files Stored:</span>
+                  <strong id="stat-storage-files">-</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Active Background Jobs:</span>
+                  <strong id="stat-active-jobs">-</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-secondary);">Database Engine:</span>
+                  <strong class="code-pill">Neon PostgreSQL + pgvector</strong>
+                </div>
+              </div>
+            </div>
+
+            <div class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Primary AI Engine Status</h2>
+                  <p>Real-time Google Gemini routing</p>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Primary Model:</span>
+                  <strong class="code-pill">gemini-3.5-flash-lite</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Fallback 1:</span>
+                  <strong class="code-pill">Groq LPU (Llama 3.3)</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+                  <span style="color: var(--text-secondary);">Fallback 2:</span>
+                  <strong class="code-pill">Cloudflare Workers AI</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-secondary);">Embedding Dimension:</span>
+                  <strong class="code-pill">768-dim (embedding-001)</strong>
+                </div>
+              </div>
             </div>
           </div>
+        </div>
 
-          <div style="overflow-x: auto;">
-            <table class="admin-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th>Registration Date</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody id="users-table-body">
-                <tr>
-                  <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading user accounts...</td>
-                </tr>
-              </tbody>
-            </table>
+        <!-- ========================================== -->
+        <!-- VIEW 2: USERS & ROLES                      -->
+        <!-- ========================================== -->
+        <div id="view-users" class="admin-view-panel">
+          <section class="dashboard-card">
+            <div class="card-header">
+              <div>
+                <h2>Platform User Accounts</h2>
+                <p>Manage accounts, toggle active/inactive access, and approve registrations</p>
+              </div>
+            </div>
+
+            <div class="filter-bar">
+              <input type="text" id="user-search-input" placeholder="Search by name or email..." style="min-width: 240px;">
+              <select id="user-role-filter">
+                <option value="all">All Roles</option>
+                <option value="student">Students</option>
+                <option value="teacher">Teachers</option>
+                <option value="admin">Admins</option>
+              </select>
+              <select id="user-status-filter">
+                <option value="all">All Statuses</option>
+                <option value="active">Active Only</option>
+                <option value="inactive">Inactive Only</option>
+                <option value="pending">Pending Approval</option>
+              </select>
+              <span id="user-count-display" style="font-size: 12px; color: var(--text-secondary); margin-left: auto;"></span>
+            </div>
+
+            <div style="overflow-x: auto;">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Approval</th>
+                    <th>Joined</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="users-table-body">
+                  <tr>
+                    <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading user accounts...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VIEW 3: ACADEMIC HUB                      -->
+        <!-- ========================================== -->
+        <div id="view-academic" class="admin-view-panel">
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+            <!-- Classrooms Section -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Classroom Hub</h2>
+                  <p>All institutional classrooms with instructors and student rosters</p>
+                </div>
+              </div>
+              <div style="overflow-x: auto;">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Code</th>
+                      <th>Classroom Name</th>
+                      <th>Instructor</th>
+                      <th>Term / Section</th>
+                      <th>Students</th>
+                      <th>Subjects</th>
+                      <th>Materials</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody id="classrooms-table-body">
+                    <tr>
+                      <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading classrooms...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <!-- Subjects Section -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Curriculum Subjects</h2>
+                  <p>Assigned academic subjects and associated study materials</p>
+                </div>
+              </div>
+              <div style="overflow-x: auto;">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Subject Name</th>
+                      <th>Code</th>
+                      <th>Creator</th>
+                      <th>Active In Classrooms</th>
+                      <th>Materials Count</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody id="subjects-table-body">
+                    <tr>
+                      <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading subjects...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </div>
-        </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VIEW 4: AI MONITORING                      -->
+        <!-- ========================================== -->
+        <div id="view-ai" class="admin-view-panel">
+          <section class="dashboard-card">
+            <div class="card-header">
+              <div>
+                <h2>Multi-Provider AI Status &amp; Failover Matrix</h2>
+                <p>Circuit breaker telemetry, provider health pings, and average generation latency</p>
+              </div>
+            </div>
+
+            <div class="provider-grid" id="provider-grid-container">
+              <!-- Dynamically populated provider cards -->
+              <div style="padding: 24px; text-align: center; color: var(--text-secondary);">Loading AI provider metrics...</div>
+            </div>
+
+            <!-- Recent AI Routing Events -->
+            <div style="margin-top: 24px;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; font-weight: 700;">Recent AI Routing &amp; Failover Events</h3>
+              <div style="overflow-x: auto;">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Task / Mode</th>
+                      <th>Primary Provider</th>
+                      <th>Resolved By</th>
+                      <th>Status</th>
+                      <th>Latency</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ai-events-table-body">
+                    <tr>
+                      <td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 20px;">No recent failover events recorded.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VIEW 5: CACHE & JOB QUEUE                 -->
+        <!-- ========================================== -->
+        <div id="view-cache" class="admin-view-panel">
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+            <!-- AI Cache Metrics -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Persistent AI Cache Performance</h2>
+                  <p>Neon PostgreSQL persistent summary and answer cache hit statistics</p>
+                </div>
+              </div>
+
+              <div class="stats-grid" style="margin-bottom: 16px;">
+                <article class="stat-card">
+                  <div class="stat-icon green">🎯</div>
+                  <div>
+                    <span class="stat-label">Summary Cache Hit Rate</span>
+                    <strong class="stat-value" id="cache-summary-hitrate">0%</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon blue">⚡</div>
+                  <div>
+                    <span class="stat-label">Summary Total Hits</span>
+                    <strong class="stat-value" id="cache-summary-hits">0</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon green">💬</div>
+                  <div>
+                    <span class="stat-label">Answer Cache Hit Rate</span>
+                    <strong class="stat-value" id="cache-answer-hitrate">0%</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon orange">🛡</div>
+                  <div>
+                    <span class="stat-label">Estimated Calls Saved</span>
+                    <strong class="stat-value" id="cache-saved-calls">0</strong>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <!-- Document Processing Job Queue -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Document Job Queue</h2>
+                  <p>Background extraction, chunking, and embedding generation jobs</p>
+                </div>
+              </div>
+
+              <div style="overflow-x: auto;">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Job ID</th>
+                      <th>Document</th>
+                      <th>Job Type</th>
+                      <th>Status</th>
+                      <th>Progress</th>
+                      <th>Attempts</th>
+                      <th>Error / Details</th>
+                      <th>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody id="jobs-table-body">
+                    <tr>
+                      <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading background jobs...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VIEW 6: AUDIT LOGS                        -->
+        <!-- ========================================== -->
+        <div id="view-logs" class="admin-view-panel">
+          <section class="dashboard-card">
+            <div class="card-header">
+              <div>
+                <h2>Platform Audit &amp; Security Logs</h2>
+                <p>Auditable actions, status modifications, and security events</p>
+              </div>
+            </div>
+
+            <div style="overflow-x: auto;">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Event Name</th>
+                    <th>Actor (User)</th>
+                    <th>Target Entity</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-table-body">
+                  <tr>
+                    <td colspan="5" style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading audit logs...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
       </div>
     </main>
   </div>
@@ -188,11 +748,19 @@
   <script src="../../scripts/config.js"></script>
   <script src="../../scripts/navigation.js"></script>
   <script src="../../scripts/notifications.js"></script>
-  <script src="../../scripts/search.js"></script>
   <script>
     const API_BASE_URL = window.API_BASE_URL || "http://127.0.0.1:3000";
 
-    async function checkAdmin() {
+    // Application state
+    let cachedUsers = [];
+    let cachedClassrooms = [];
+    let cachedSubjects = [];
+    let cachedJobs = [];
+    let cachedLogs = [];
+    let currentTab = "overview";
+
+    // Initialize Admin Dashboard
+    async function initAdmin() {
       try {
         const response = await fetch(`${API_BASE_URL}/api/auth/me`, { credentials: "include" });
         if (!response.ok) {
@@ -208,53 +776,188 @@
         document.getElementById("admin-name").textContent = data.user.name;
         document.getElementById("admin-avatar").textContent = data.user.name.charAt(0).toUpperCase();
 
-        await loadMetrics();
-        await loadUsers();
+        setupTabs();
+        setupFilters();
+        handleHashRouting();
+
+        // Initial Data Load
+        await loadOverviewMetrics();
       } catch (err) {
+        console.error("Admin init error:", err);
         window.location.href = "../login/index.html";
       }
     }
 
-    async function loadMetrics() {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/admin/metrics`, { credentials: "include" });
-        if (!res.ok) return;
-        const data = await res.json();
-        const m = data.metrics;
-        document.getElementById("stat-total-users").textContent = m.totalUsers;
-        document.getElementById("stat-teachers").textContent = m.teacherCount;
-        document.getElementById("stat-students").textContent = m.studentCount;
-        document.getElementById("stat-classrooms").textContent = m.totalClassrooms;
-      } catch (err) {
-        console.error("Metrics error:", err);
+    // Tab Navigation System
+    function setupTabs() {
+      const tabButtons = document.querySelectorAll(".admin-tab-btn, .sidebar-nav a[data-tab]");
+      tabButtons.forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          const targetTab = btn.getAttribute("data-tab");
+          if (!targetTab) return;
+          switchTab(targetTab);
+          window.location.hash = targetTab;
+        });
+      });
+
+      window.addEventListener("hashchange", handleHashRouting);
+    }
+
+    function handleHashRouting() {
+      const hash = (window.location.hash || "").replace("#", "");
+      if (["overview", "users", "academic", "ai", "cache", "logs"].includes(hash)) {
+        switchTab(hash);
+      } else {
+        switchTab("overview");
       }
     }
 
+    function switchTab(tabId) {
+      currentTab = tabId;
+
+      // Update Tab Buttons
+      document.querySelectorAll(".admin-tab-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-tab") === tabId);
+      });
+      document.querySelectorAll(".sidebar-nav a[data-tab]").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-tab") === tabId);
+      });
+
+      // Update View Panels
+      document.querySelectorAll(".admin-view-panel").forEach(p => {
+        p.classList.remove("active");
+      });
+      const activePanel = document.getElementById(`view-${tabId}`);
+      if (activePanel) activePanel.classList.add("active");
+
+      // Lazy load tab data
+      if (tabId === "overview") loadOverviewMetrics();
+      else if (tabId === "users") loadUsers();
+      else if (tabId === "academic") loadAcademic();
+      else if (tabId === "ai") loadAiStatus();
+      else if (tabId === "cache") loadCacheAndJobs();
+      else if (tabId === "logs") loadLogs();
+    }
+
+    async function refreshCurrentTab() {
+      switchTab(currentTab);
+    }
+
+    // 1. Overview Metrics
+    async function loadOverviewMetrics() {
+      try {
+        const [metricsRes, cacheRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/admin/metrics`, { credentials: "include" }),
+          fetch(`${API_BASE_URL}/api/admin/cache/metrics`, { credentials: "include" })
+        ]);
+
+        if (metricsRes.ok) {
+          const data = await metricsRes.json();
+          const m = data.metrics || {};
+          document.getElementById("stat-total-users").textContent = m.totalUsers ?? 0;
+          document.getElementById("stat-teachers").textContent = m.teacherCount ?? 0;
+          document.getElementById("stat-students").textContent = m.studentCount ?? 0;
+          document.getElementById("stat-classrooms").textContent = m.totalClassrooms ?? 0;
+          document.getElementById("stat-materials").textContent = m.totalDocuments ?? 0;
+          document.getElementById("stat-storage-files").textContent = m.storage?.totalFiles ?? m.totalDocuments ?? 0;
+          document.getElementById("stat-storage-provider").textContent = (m.storage?.provider || "supabase").toUpperCase();
+          document.getElementById("stat-active-jobs").textContent = `${m.jobs?.processing ?? 0} processing / ${m.jobs?.pending ?? 0} queued`;
+        }
+
+        if (cacheRes.ok) {
+          const cData = await cacheRes.json();
+          const cm = cData.metrics || {};
+          document.getElementById("stat-cache-saved").textContent = `${cm.estimatedSavedAiCalls ?? 0} calls`;
+        }
+      } catch (err) {
+        console.error("Overview metrics error:", err);
+      }
+    }
+
+    // 2. User Accounts Management
     async function loadUsers() {
       try {
         const res = await fetch(`${API_BASE_URL}/api/admin/users`, { credentials: "include" });
         if (!res.ok) return;
         const data = await res.json();
-        const users = data.users || [];
-        const tbody = document.getElementById("users-table-body");
-
-        tbody.innerHTML = users.map(u => `
-          <tr>
-            <td>#${u.id}</td>
-            <td><strong>${escapeHTML(u.name)}</strong></td>
-            <td>${escapeHTML(u.email)}</td>
-            <td><span class="role-badge ${u.role}">${u.role}</span></td>
-            <td><span class="status-badge ${u.is_approved ? 'approved' : 'pending'}">${u.is_approved ? 'Approved' : 'Pending'}</span></td>
-            <td>${new Date(u.created_at).toLocaleDateString()}</td>
-            <td>
-              <button class="btn-approve" onclick="toggleApprove(${u.id})">
-                ${u.is_approved ? 'Revoke' : 'Approve'}
-              </button>
-            </td>
-          </tr>
-        `).join("");
+        cachedUsers = data.users || [];
+        renderUsersTable();
       } catch (err) {
-        console.error("Users error:", err);
+        console.error("Load users error:", err);
+      }
+    }
+
+    function renderUsersTable() {
+      const searchVal = (document.getElementById("user-search-input")?.value || "").toLowerCase().trim();
+      const roleFilter = document.getElementById("user-role-filter")?.value || "all";
+      const statusFilter = document.getElementById("user-status-filter")?.value || "all";
+
+      const filtered = cachedUsers.filter(u => {
+        const matchSearch = !searchVal || u.name?.toLowerCase().includes(searchVal) || u.email?.toLowerCase().includes(searchVal);
+        const matchRole = roleFilter === "all" || u.role === roleFilter;
+        let matchStatus = true;
+        if (statusFilter === "active") matchStatus = u.is_active;
+        else if (statusFilter === "inactive") matchStatus = !u.is_active;
+        else if (statusFilter === "pending") matchStatus = !u.is_approved;
+        return matchSearch && matchRole && matchStatus;
+      });
+
+      const countDisplay = document.getElementById("user-count-display");
+      if (countDisplay) countDisplay.textContent = `Showing ${filtered.length} of ${cachedUsers.length} accounts`;
+
+      const tbody = document.getElementById("users-table-body");
+      if (!tbody) return;
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">No users match your criteria.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(u => `
+        <tr>
+          <td><span class="code-pill">#${u.id}</span></td>
+          <td><strong>${escapeHTML(u.name)}</strong></td>
+          <td>${escapeHTML(u.email)}</td>
+          <td><span class="role-badge ${u.role}">${u.role}</span></td>
+          <td>
+            <span class="status-badge ${u.is_active ? 'active' : 'inactive'}">
+              ${u.is_active ? '● Active' : '○ Inactive'}
+            </span>
+          </td>
+          <td>
+            <span class="status-badge ${u.is_approved ? 'approved' : 'pending'}">
+              ${u.is_approved ? 'Approved' : 'Pending'}
+            </span>
+          </td>
+          <td>${new Date(u.created_at).toLocaleDateString()}</td>
+          <td style="display: flex; gap: 6px;">
+            <button type="button" class="btn-action-sm ${u.is_active ? 'danger' : ''}" onclick="toggleUserStatus(${u.id})">
+              ${u.is_active ? 'Deactivate' : 'Activate'}
+            </button>
+            <button type="button" class="btn-action-sm" onclick="toggleApprove(${u.id})">
+              ${u.is_approved ? 'Revoke' : 'Approve'}
+            </button>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    async function toggleUserStatus(userId) {
+      if (!confirm("Are you sure you want to change this user's active status?")) return;
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/toggle-status`, {
+          method: "POST",
+          credentials: "include"
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.message || "Failed to update status.");
+          return;
+        }
+        await loadUsers();
+      } catch (err) {
+        console.error("Toggle status error:", err);
       }
     }
 
@@ -266,10 +969,242 @@
         });
         if (res.ok) {
           await loadUsers();
-          await loadMetrics();
         }
       } catch (err) {
         console.error("Approve error:", err);
+      }
+    }
+
+    // 3. Academic Hub (Classrooms & Subjects)
+    async function loadAcademic() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/academic`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        cachedClassrooms = data.classrooms || [];
+        cachedSubjects = data.subjects || [];
+
+        const classTbody = document.getElementById("classrooms-table-body");
+        if (classTbody) {
+          if (cachedClassrooms.length === 0) {
+            classTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">No classrooms created yet.</td></tr>`;
+          } else {
+            classTbody.innerHTML = cachedClassrooms.map(c => `
+              <tr>
+                <td><span class="code-pill">${escapeHTML(c.code)}</span></td>
+                <td><strong>${escapeHTML(c.name)}</strong></td>
+                <td>${escapeHTML(c.teacher_name || "Unknown")}<br><small style="color: var(--text-secondary);">${escapeHTML(c.teacher_email || "")}</small></td>
+                <td>${escapeHTML(c.semester || "-")} / ${escapeHTML(c.section || "-")}</td>
+                <td><strong>${c.student_count || 0}</strong></td>
+                <td><strong>${c.subject_count || 0}</strong></td>
+                <td><strong>${c.material_count || 0}</strong></td>
+                <td>${new Date(c.created_at).toLocaleDateString()}</td>
+              </tr>
+            `).join("");
+          }
+        }
+
+        const subjTbody = document.getElementById("subjects-table-body");
+        if (subjTbody) {
+          if (cachedSubjects.length === 0) {
+            subjTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 24px;">No subjects created yet.</td></tr>`;
+          } else {
+            subjTbody.innerHTML = cachedSubjects.map(s => `
+              <tr>
+                <td><span class="code-pill">#${s.id}</span></td>
+                <td><strong>${escapeHTML(s.name)}</strong></td>
+                <td>${s.code ? `<span class="code-pill">${escapeHTML(s.code)}</span>` : '-'}</td>
+                <td>${escapeHTML(s.creator_name || "System")}</td>
+                <td><strong>${s.classroom_count || 0}</strong></td>
+                <td><strong>${s.document_count || 0}</strong></td>
+                <td>${new Date(s.created_at).toLocaleDateString()}</td>
+              </tr>
+            `).join("");
+          }
+        }
+      } catch (err) {
+        console.error("Load academic error:", err);
+      }
+    }
+
+    // 4. AI Provider Matrix
+    async function loadAiStatus() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/ai/status`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const providers = data.status?.providers || {};
+        const events = data.status?.recentEvents || [];
+
+        const grid = document.getElementById("provider-grid-container");
+        if (grid) {
+          grid.innerHTML = Object.entries(providers).map(([key, p]) => {
+            let badgeClass = p.status;
+            let displayStatus = p.status;
+            if (p.status === "ready") displayStatus = "Ready";
+            else if (p.status === "cooldown") displayStatus = `Cooldown (${p.cooldownSecondsRemaining}s)`;
+            else if (p.status === "not_configured") displayStatus = "Not Configured";
+
+            return `
+              <div class="provider-card">
+                <div class="provider-header">
+                  <div class="provider-title">
+                    <span>${key === 'gemini' ? '✨' : key === 'groq' ? '⚡' : '☁️'}</span>
+                    <span>${escapeHTML(p.name)}</span>
+                  </div>
+                  <span class="status-badge ${badgeClass}">${displayStatus}</span>
+                </div>
+                <div class="provider-metrics">
+                  <div class="metric-item">
+                    <span>Configured</span>
+                    <span>${p.configured ? 'Yes (Active)' : 'No (Key missing)'}</span>
+                  </div>
+                  <div class="metric-item">
+                    <span>Total Requests</span>
+                    <span>${p.totalRequests}</span>
+                  </div>
+                  <div class="metric-item">
+                    <span>Success Rate</span>
+                    <span>${p.totalRequests > 0 ? Math.round((p.successCount / p.totalRequests) * 100) : 100}%</span>
+                  </div>
+                  <div class="metric-item">
+                    <span>Avg Latency</span>
+                    <span>${p.avgLatencyMs ? p.avgLatencyMs + ' ms' : 'N/A'}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join("");
+        }
+
+        const eventsTbody = document.getElementById("ai-events-table-body");
+        if (eventsTbody) {
+          if (events.length === 0) {
+            eventsTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 20px;">No failover events recorded yet.</td></tr>`;
+          } else {
+            eventsTbody.innerHTML = events.slice(0, 10).map(e => `
+              <tr>
+                <td>${new Date(e.timestamp).toLocaleTimeString()}</td>
+                <td><span class="code-pill">${escapeHTML(e.task || "ai_generation")}</span></td>
+                <td>${escapeHTML(e.primaryProvider || "gemini")}</td>
+                <td><strong>${escapeHTML(e.resolvedBy || "-")}</strong></td>
+                <td><span class="status-badge ${e.status === 'success' ? 'ready' : 'failed'}">${escapeHTML(e.status)}</span></td>
+                <td>${e.durationMs ? e.durationMs + ' ms' : '-'}</td>
+              </tr>
+            `).join("");
+          }
+        }
+      } catch (err) {
+        console.error("Load AI status error:", err);
+      }
+    }
+
+    // 5. Cache & Job Queue
+    async function loadCacheAndJobs() {
+      try {
+        const [cacheRes, jobsRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/admin/cache/metrics`, { credentials: "include" }),
+          fetch(`${API_BASE_URL}/api/admin/jobs`, { credentials: "include" })
+        ]);
+
+        if (cacheRes.ok) {
+          const cData = await cacheRes.json();
+          const cm = cData.metrics || {};
+          document.getElementById("cache-summary-hitrate").textContent = `${cm.hitRate ?? '0%'}`;
+          document.getElementById("cache-summary-hits").textContent = `${cm.summaryHits ?? 0} hits`;
+          document.getElementById("cache-answer-hitrate").textContent = `${cm.answerHits ?? 0} hits`;
+          document.getElementById("cache-saved-calls").textContent = `${cm.estimatedSavedAiCalls ?? 0} calls`;
+        }
+
+        if (jobsRes.ok) {
+          const jData = await jobsRes.json();
+          cachedJobs = jData.jobs || [];
+          const jobsTbody = document.getElementById("jobs-table-body");
+          if (jobsTbody) {
+            if (cachedJobs.length === 0) {
+              jobsTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 24px;">No background document jobs queued.</td></tr>`;
+            } else {
+              jobsTbody.innerHTML = cachedJobs.map(j => `
+                <tr>
+                  <td><span class="code-pill">#${j.id}</span></td>
+                  <td><strong>${escapeHTML(j.original_filename || j.filename || 'Document #' + j.pdf_id)}</strong></td>
+                  <td><span class="code-pill">${escapeHTML(j.job_type)}</span></td>
+                  <td><span class="status-badge ${j.status}">${escapeHTML(j.status)}</span></td>
+                  <td style="min-width: 100px;">
+                    <div>${j.progress || 0}%</div>
+                    <div class="progress-bar-container">
+                      <div class="progress-bar-fill" style="width: ${j.progress || 0}%;"></div>
+                    </div>
+                  </td>
+                  <td>${j.attempts || 0} / ${j.max_attempts || 3}</td>
+                  <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHTML(j.error_message || '')}">
+                    ${j.error_message ? `<span style="color: #dc2626;">${escapeHTML(j.error_message)}</span>` : '<span style="color: var(--text-secondary);">None</span>'}
+                  </td>
+                  <td>${new Date(j.updated_at).toLocaleTimeString()}</td>
+                </tr>
+              `).join("");
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Load cache and jobs error:", err);
+      }
+    }
+
+    // 6. Audit Logs
+    async function loadLogs() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/logs`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        cachedLogs = data.logs || [];
+        const logsTbody = document.getElementById("logs-table-body");
+        if (logsTbody) {
+          if (cachedLogs.length === 0) {
+            logsTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-secondary); padding: 24px;">No audit logs available.</td></tr>`;
+          } else {
+            logsTbody.innerHTML = cachedLogs.map(l => {
+              const metaString = l.metadata ? JSON.stringify(l.metadata) : "-";
+              return `
+                <tr>
+                  <td>${new Date(l.createdAt).toLocaleString()}</td>
+                  <td><strong>${escapeHTML(l.eventName)}</strong></td>
+                  <td>${escapeHTML(l.userEmail)} <span class="role-badge ${l.userRole}">${l.userRole}</span></td>
+                  <td><span class="code-pill">${escapeHTML(l.entityType || "-")} #${escapeHTML(l.entityId || "-")}</span></td>
+                  <td style="font-family: monospace; font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHTML(metaString)}">
+                    ${escapeHTML(metaString)}
+                  </td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+      } catch (err) {
+        console.error("Load logs error:", err);
+      }
+    }
+
+    // Realtime Filters Setup
+    function setupFilters() {
+      const userSearch = document.getElementById("user-search-input");
+      const roleFilter = document.getElementById("user-role-filter");
+      const statusFilter = document.getElementById("user-status-filter");
+      const globalSearch = document.getElementById("global-admin-search");
+
+      if (userSearch) userSearch.addEventListener("input", renderUsersTable);
+      if (roleFilter) roleFilter.addEventListener("change", renderUsersTable);
+      if (statusFilter) statusFilter.addEventListener("change", renderUsersTable);
+
+      if (globalSearch) {
+        globalSearch.addEventListener("input", (e) => {
+          const query = e.target.value.toLowerCase().trim();
+          const activeTable = document.querySelector(".admin-view-panel.active table tbody");
+          if (!activeTable) return;
+          Array.from(activeTable.querySelectorAll("tr")).forEach(row => {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(query) ? "" : "none";
+          });
+        });
       }
     }
 
@@ -279,7 +1214,8 @@
       return div.innerHTML;
     }
 
-    checkAdmin();
+    // Launch
+    initAdmin();
   </script>
 </body>
 </html>
