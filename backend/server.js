@@ -579,6 +579,59 @@ app.get("/api/protected-test", requireAuth, (req, res) => {
   });
 });
 
+// Change Password (Available to authenticated users, including Admins)
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const userId = req.user.id;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: "Current and new passwords are required." });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ success: false, message: "New password must be at least 8 characters long." });
+    }
+
+    if (confirmPassword && newPassword !== confirmPassword) {
+      return res.status(400).json({ success: false, message: "New password and confirmation do not match." });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, message: "New password must be different from current password." });
+    }
+
+    // Fetch current user hash
+    const userRes = await pool.query("SELECT password_hash, email FROM users WHERE id = $1", [userId]);
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    const { password_hash, email } = userRes.rows[0];
+    const isMatch = await bcrypt.compare(currentPassword, password_hash);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: "Current password is incorrect." });
+    }
+
+    // Hash new password
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await pool.query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2", [newHash, userId]);
+
+    // Audit log
+    try {
+      await pool.query(`
+        INSERT INTO analytics_events (user_id, event_name, entity_type, entity_id, metadata)
+        VALUES ($1, 'password_changed', 'user', $1, $2)
+      `, [userId, JSON.stringify({ changed_by: userId, email })]);
+    } catch (_) {}
+
+    return res.status(200).json({ success: true, message: "Password updated successfully." });
+  } catch (error) {
+    console.error("Change password error:", error);
+    return res.status(500).json({ success: false, message: "Unable to update password. Please try again." });
+  }
+});
+
 // ============================================================
 // ROLE-PROTECTED TEST ROUTES (FOR VERIFICATION)
 // ============================================================
