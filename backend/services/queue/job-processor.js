@@ -174,8 +174,10 @@ class JobProcessor {
       WITH next_job AS (
         SELECT id
         FROM document_jobs
-        WHERE status = 'pending'
-          AND (locked_at IS NULL OR locked_at < NOW() - INTERVAL '5 minutes')
+        WHERE (
+          status = 'pending'
+          OR (status = 'processing' AND locked_at < NOW() - INTERVAL '2 minutes' AND attempts < max_attempts)
+        )
         ORDER BY created_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

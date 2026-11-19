@@ -2933,6 +2933,24 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
       }
     }
 
+    let currentStatus = document.processing_status;
+    if (currentStatus !== "completed") {
+      try {
+        const chunkCheck = await pool.query(
+          "SELECT COUNT(*) FROM pdf_chunks WHERE pdf_id = $1",
+          [document.id]
+        );
+        const chunkCount = parseInt(chunkCheck.rows[0].count, 10);
+        if (chunkCount > 0) {
+          await pool.query(
+            "UPDATE pdfs SET processing_status = 'completed', page_count = COALESCE(page_count, $1), updated_at = NOW() WHERE id = $2",
+            [extracted.pageCount || 1, document.id]
+          );
+          currentStatus = "completed";
+        }
+      } catch (_) {}
+    }
+
     return res.status(200).json({
       success: true,
       fileType: extracted.fileType,
@@ -2944,7 +2962,7 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
         html: extracted.formattedHtml
       },
       sections: extracted.sections,
-      processingStatus: document.processing_status,
+      processingStatus: currentStatus,
       processingError: document.processing_error
     });
   } catch (error) {

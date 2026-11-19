@@ -1641,7 +1641,37 @@ async function loadDocumentTextView() {
     const data = await loadExtractedDocumentText();
     loadingMessage.hidden = true;
 
-    // 1. Check if document is still processing
+    const formattedHtml = data.content?.html || data.formattedHtml;
+    const plainText = data.content?.text || data.text;
+
+    // 1. If text/html has already been extracted, render it immediately so the user can read without waiting
+    if (formattedHtml || plainText) {
+      if (formattedHtml) {
+        documentText.innerHTML = formattedHtml;
+      } else {
+        documentText.innerHTML = `<div style="padding: 24px; font-size: 15px; line-height: 1.7; color: #1e293b; max-width: 860px; margin: 0 auto; white-space: pre-wrap;">${escapeHTML(plainText)}</div>`;
+      }
+
+      const count = data.sections?.length || data.pageCount || 1;
+      const unit = data.fileType === "pptx" ? (count === 1 ? "Slide" : "Slides") : (data.fileType === "docx" ? (count === 1 ? "Section" : "Sections") : (count === 1 ? "Page" : "Pages"));
+
+      if (data.processingStatus === "processing" || data.processingStatus === "uploaded") {
+        pdfStatus.textContent = `${count} ${unit} • Indexing...`;
+        setTimeout(async () => {
+          try {
+            const checkData = await loadExtractedDocumentText();
+            if (checkData.processingStatus === "completed") {
+              pdfStatus.textContent = `${count} ${unit}`;
+            }
+          } catch (_) {}
+        }, 3500);
+      } else {
+        pdfStatus.textContent = `${count} ${unit}`;
+      }
+      return;
+    }
+
+    // 2. If no text is available yet and document is still processing, show processing banner with auto-refresh
     if (data.processingStatus === "processing" || data.processingStatus === "uploaded") {
       documentText.innerHTML = `
         <div class="document-processing-banner" style="text-align: center; padding: 48px 24px; max-width: 520px; margin: 40px auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px;">
@@ -1656,10 +1686,13 @@ async function loadDocumentTextView() {
         </div>
       `;
       pdfStatus.textContent = "Processing...";
+      setTimeout(() => {
+        if (currentFileType !== "pdf") loadDocumentTextView();
+      }, 3000);
       return;
     }
 
-    // 2. Check if processing failed
+    // 3. Check if processing failed
     if (data.processingStatus === "failed") {
       documentText.innerHTML = `
         <div class="document-error-banner" style="text-align: center; padding: 48px 24px; max-width: 520px; margin: 40px auto; background: #fef2f2; border: 1px solid #fecaca; border-radius: 16px;">
@@ -1674,27 +1707,15 @@ async function loadDocumentTextView() {
       return;
     }
 
-    // 3. Render extracted content (formatted HTML or structured sections/slides)
-    const formattedHtml = data.content?.html || data.formattedHtml;
-    const plainText = data.content?.text || data.text;
-
-    if (formattedHtml) {
-      documentText.innerHTML = formattedHtml;
-    } else if (plainText) {
-      documentText.innerHTML = `<div style="padding: 24px; font-size: 15px; line-height: 1.7; color: #1e293b; max-width: 860px; margin: 0 auto; white-space: pre-wrap;">${escapeHTML(plainText)}</div>`;
-    } else {
-      documentText.innerHTML = `
-        <div style="text-align: center; padding: 48px 24px; color: #64748b;">
-          <div style="font-size: 36px; margin-bottom: 8px;">📄</div>
-          <h3 style="font-size: 16px; font-weight: 600; color: #1e293b;">No text available in this document</h3>
-          <p style="font-size: 13px;">The uploaded file does not contain readable text content.</p>
-        </div>
-      `;
-    }
-
-    const count = data.sections?.length || data.pageCount || 1;
-    const unit = data.fileType === "pptx" ? (count === 1 ? "Slide" : "Slides") : (data.fileType === "docx" ? (count === 1 ? "Section" : "Sections") : (count === 1 ? "Page" : "Pages"));
-    pdfStatus.textContent = `${count} ${unit}`;
+    // 4. Empty state fallback
+    documentText.innerHTML = `
+      <div style="text-align: center; padding: 48px 24px; color: #64748b;">
+        <div style="font-size: 36px; margin-bottom: 8px;">📄</div>
+        <h3 style="font-size: 16px; font-weight: 600; color: #1e293b;">No text available in this document</h3>
+        <p style="font-size: 13px;">The uploaded file does not contain readable text content.</p>
+      </div>
+    `;
+    pdfStatus.textContent = "0 Pages";
 
   } catch (err) {
     console.error("Failed to load document text view:", err);
