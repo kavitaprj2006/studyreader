@@ -1079,6 +1079,9 @@
             else if (p.status === "cooldown") displayStatus = `Cooldown (${p.cooldownSecondsRemaining}s)`;
             else if (p.status === "not_configured") displayStatus = "Not Configured";
 
+            const successRateDisplay = p.totalRequests > 0 ? (p.successRate != null ? p.successRate + '%' : Math.round((p.successCount / p.totalRequests) * 100) + '%') : '—';
+            const latencyDisplay = p.totalRequests > 0 && p.avgLatencyMs ? p.avgLatencyMs + ' ms' : (p.lastLatencyMs ? p.lastLatencyMs + ' ms' : '—');
+
             return `
               <div class="provider-card">
                 <div class="provider-header">
@@ -1099,12 +1102,17 @@
                   </div>
                   <div class="metric-item">
                     <span>Success Rate</span>
-                    <span>${p.totalRequests > 0 ? Math.round((p.successCount / p.totalRequests) * 100) : 100}%</span>
+                    <span>${successRateDisplay}</span>
                   </div>
                   <div class="metric-item">
                     <span>Avg Latency</span>
-                    <span>${p.avgLatencyMs ? p.avgLatencyMs + ' ms' : 'N/A'}</span>
+                    <span>${latencyDisplay}</span>
                   </div>
+                </div>
+                <div style="margin-top: 14px; pt: 10px; border-top: 1px solid var(--border);">
+                  <button type="button" class="btn-sm" onclick="runProviderTest('${key}')" style="width: 100%; padding: 6px 10px; font-size: 12px; font-weight: 600; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                    🧪 Test ${escapeHTML(p.name)}
+                  </button>
                 </div>
               </div>
             `;
@@ -1116,20 +1124,53 @@
           if (events.length === 0) {
             eventsTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 20px;">No failover events recorded yet.</td></tr>`;
           } else {
-            eventsTbody.innerHTML = events.slice(0, 10).map(e => `
+            eventsTbody.innerHTML = events.slice(0, 10).map(e => {
+              const statusClass = (e.type && e.type.includes("success")) || e.status === "success" ? "ready" : "failed";
+              const statusText = statusClass === "ready" ? "Success" : "Failed";
+              const latencyText = e.latencyMs ? e.latencyMs + ' ms' : (e.durationMs ? e.durationMs + ' ms' : '-');
+              return `
               <tr>
                 <td>${new Date(e.timestamp).toLocaleTimeString()}</td>
-                <td><span class="code-pill">${escapeHTML(e.task || "ai_generation")}</span></td>
-                <td>${escapeHTML(e.primaryProvider || "gemini")}</td>
-                <td><strong>${escapeHTML(e.resolvedBy || "-")}</strong></td>
-                <td><span class="status-badge ${e.status === 'success' ? 'ready' : 'failed'}">${escapeHTML(e.status)}</span></td>
-                <td>${e.durationMs ? e.durationMs + ' ms' : '-'}</td>
+                <td><span class="code-pill">${escapeHTML(e.type || e.task || "ai_generation")}</span></td>
+                <td>${escapeHTML(e.provider || e.primaryProvider || "gemini")}</td>
+                <td><strong>${escapeHTML(e.model || e.resolvedBy || "-")}</strong></td>
+                <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                <td>${latencyText}</td>
               </tr>
-            `).join("");
+            `;
+            }).join("");
           }
         }
       } catch (err) {
         console.error("Load AI status error:", err);
+      }
+    }
+
+    async function runProviderTest(providerKey) {
+      try {
+        const btn = event?.currentTarget;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Testing...";
+        }
+
+        const res = await fetch(`${API_BASE_URL}/api/admin/ai/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ provider: providerKey })
+        });
+        const data = await res.json();
+
+        if (data.success && data.result?.success) {
+          alert(`✅ ${data.result.name || providerKey} test succeeded!\nModel: ${data.result.model}\nLatency: ${data.result.latencyMs}ms\nResponse: "${data.result.response}"`);
+        } else {
+          const errDetail = data.result?.error || data.message || "Test failed.";
+          alert(`⚠️ ${providerKey} test result:\n${errDetail}`);
+        }
+        await loadAiStatus();
+      } catch (err) {
+        alert(`Network error testing ${providerKey}: ${err.message}`);
       }
     }
 

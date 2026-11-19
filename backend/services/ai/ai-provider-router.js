@@ -36,6 +36,7 @@ const providerMetrics = {
     failureCount: 0,
     fallbackEvents: 0,
     lastLatencyMs: 0,
+    totalLatencyMs: 0,
     lastError: null,
     lastUsedAt: null
   },
@@ -49,6 +50,7 @@ const providerMetrics = {
     failureCount: 0,
     fallbackEvents: 0,
     lastLatencyMs: 0,
+    totalLatencyMs: 0,
     lastError: null,
     lastUsedAt: null
   },
@@ -62,6 +64,7 @@ const providerMetrics = {
     failureCount: 0,
     fallbackEvents: 0,
     lastLatencyMs: 0,
+    totalLatencyMs: 0,
     lastError: null,
     lastUsedAt: null
   }
@@ -177,6 +180,7 @@ async function generateWithFallback({
 
       const latencyMs = Date.now() - startTime;
       metric.lastLatencyMs = latencyMs;
+      metric.totalLatencyMs = (metric.totalLatencyMs || 0) + latencyMs;
       metric.successCount++;
       metric.healthy = true;
       metric.lastUsedAt = new Date().toISOString();
@@ -281,7 +285,9 @@ function getProviderStatus() {
       successCount: metric.successCount,
       failureCount: metric.failureCount,
       fallbackEvents: metric.fallbackEvents,
+      successRate: metric.totalRequests > 0 ? Math.round((metric.successCount / metric.totalRequests) * 100) : null,
       lastLatencyMs: metric.lastLatencyMs,
+      avgLatencyMs: metric.totalRequests > 0 ? Math.round(metric.totalLatencyMs / metric.totalRequests) : null,
       lastError: metric.lastError,
       lastUsedAt: metric.lastUsedAt
     };
@@ -291,6 +297,89 @@ function getProviderStatus() {
     providers: summary,
     recentEvents: recentAiEvents.slice(0, 20)
   };
+}
+
+/**
+ * Executes a direct diagnostic test against a specific AI provider.
+ * Does not fall back to other providers so each provider can be verified independently.
+ */
+async function testProvider(providerName) {
+  const adapter = PROVIDERS.find(p => p.name === providerName);
+  if (!adapter) {
+    throw new Error(`Unknown provider '${providerName}'. Valid providers are: gemini, groq, cloudflare.`);
+  }
+
+  const metric = providerMetrics[providerName];
+  if (!adapter.isAvailable()) {
+    metric.configured = false;
+    return {
+      provider: providerName,
+      name: metric.name,
+      configured: false,
+      success: false,
+      error: `Missing credentials. Ensure ${providerName === 'groq' ? 'GROQ_API_KEY' : (providerName === 'cloudflare' ? 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN' : 'GEMINI_API_KEY')} is set.`
+    };
+  }
+
+  metric.configured = true;
+  metric.totalRequests++;
+  const startTime = Date.now();
+
+  try {
+    const result = await adapter.generateText({
+      prompt: "Respond with 'StudyReader AI Health Check OK' in under 10 words.",
+      maxOutputTokens: 512
+    });
+
+    const latencyMs = Date.now() - startTime;
+    metric.lastLatencyMs = latencyMs;
+    metric.totalLatencyMs = (metric.totalLatencyMs || 0) + latencyMs;
+    metric.successCount++;
+    metric.healthy = true;
+    metric.lastError = null;
+    metric.lastUsedAt = new Date().toISOString();
+
+    recordAiEvent({
+      type: "diagnostic_test_success",
+      provider: providerName,
+      model: result.model,
+      latencyMs,
+      message: `Diagnostic test succeeded: "${result.text.slice(0, 80)}"`
+    });
+
+    return {
+      provider: providerName,
+      name: metric.name,
+      configured: true,
+      success: true,
+      model: result.model,
+      latencyMs,
+      response: result.text
+    };
+
+  } catch (err) {
+    const latencyMs = Date.now() - startTime;
+    metric.lastLatencyMs = latencyMs;
+    metric.totalLatencyMs = (metric.totalLatencyMs || 0) + latencyMs;
+    metric.failureCount++;
+    metric.lastError = err.message;
+
+    recordAiEvent({
+      type: "diagnostic_test_failure",
+      provider: providerName,
+      latencyMs,
+      error: err.message
+    });
+
+    return {
+      provider: providerName,
+      name: metric.name,
+      configured: true,
+      success: false,
+      latencyMs,
+      error: err.message
+    };
+  }
 }
 
 function clearCooldowns() {
@@ -303,6 +392,7 @@ function clearCooldowns() {
 module.exports = {
   generateWithFallback,
   getProviderStatus,
+  testProvider,
   recordAiEvent,
   clearCooldowns
 };

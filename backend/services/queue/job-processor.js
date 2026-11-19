@@ -12,7 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const officeParser = require("officeparser");
+const documentProcessor = require("../document/document-processor");
 const cloudStorage = require("../storage/cloud-storage");
 const { batchGenerateEmbeddings, formatVectorLiteral } = require("../ai/embedding-service");
 const { createChunks } = require("../ai/rag-service");
@@ -196,45 +196,16 @@ class JobProcessor {
   }
 
   /**
-   * Extracts pages/slides/sections from a local file via officeParser.
+   * Extracts pages/slides/sections from a local file via unified DocumentProcessor.
    */
   async extractDocumentPages(filePath, originalFilename = "") {
-    const pages = [];
-    const ext = path.extname(originalFilename || filePath).toLowerCase();
-    const isPdf = ext === ".pdf";
-    const isPptx = ext === ".pptx";
-
     try {
-      const ast = await officeParser.parseOffice(filePath);
-      if (ast && Array.isArray(ast.content) && ast.content.length > 0) {
-        ast.content.forEach((node, idx) => {
-          const text = String(node.text || "").trim();
-          if (text) {
-            if (isPdf) {
-              const pageNum = Number(node.metadata?.pageNumber) || (idx + 1);
-              pages.push({ pageNumber: pageNum, text });
-            } else if (isPptx) {
-              const slideNum = Number(node.metadata?.slideNumber) || (idx + 1);
-              pages.push({ slideNumber: slideNum, text });
-            } else {
-              pages.push({ sectionNumber: idx + 1, text });
-            }
-          }
-        });
-      }
-
-      if (pages.length === 0 && ast) {
-        const parsedText = await ast.to("text");
-        const fallbackText = String(parsedText?.value || "").trim();
-        if (fallbackText) {
-          pages.push({ text: fallbackText });
-        }
-      }
+      const extracted = await documentProcessor.extractDocument(filePath, originalFilename);
+      return documentProcessor.toPageChunks(extracted);
     } catch (err) {
-      console.warn(`[JobProcessor] Error in officeParser extraction for ${originalFilename}:`, err.message);
+      console.warn(`[JobProcessor] Error in document extraction for ${originalFilename}:`, err.message);
+      return [{ text: originalFilename || "Document" }];
     }
-
-    return pages;
   }
 
   /**
@@ -266,8 +237,9 @@ class JobProcessor {
 
       // 3. Extract text and page structure
       await this.updateProgress(jobId, pdfId, 45, "processing");
-      const pages = await this.extractDocumentPages(tempFile, pdf.original_filename);
-      const pageCount = pages.length > 0 ? pages.length : 1;
+      const extracted = await documentProcessor.extractDocument(tempFile, pdf.original_filename);
+      const pages = documentProcessor.toPageChunks(extracted);
+      const pageCount = extracted.pageCount > 0 ? extracted.pageCount : 1;
 
       // 4. Generate structured page-aware chunks
       await this.updateProgress(jobId, pdfId, 60, "processing");

@@ -1470,6 +1470,8 @@ function switchAiView(viewName) {
       aiChatView.style.display = "flex";
       if (chatInput) chatInput.focus();
     }
+    // Restore or reload conversation history when opening AI Tutor
+    loadChatHistory();
   } else if (viewName === "summary") {
     if (documentAiTitle) documentAiTitle.textContent = "≣ Structured Summary";
     if (documentAiStatus) documentAiStatus.textContent = "Key Takeaways";
@@ -1563,10 +1565,25 @@ async function initializeReadAloud() {
     sections = await getPdfReadingSections();
   } else {
     const textData = await loadExtractedDocumentText();
-    sections = [{
-      label: "Document",
-      text: textData.content?.text || ""
-    }];
+    if (Array.isArray(textData.sections) && textData.sections.length > 0) {
+      sections = textData.sections.map(s => {
+        let label = "Section";
+        if (typeof s.slideNumber === "number") {
+          label = `Slide ${s.slideNumber}: ${s.title || ''}`;
+        } else if (typeof s.sectionNumber === "number") {
+          label = s.title || `Section ${s.sectionNumber}`;
+        }
+        return {
+          label,
+          text: s.text
+        };
+      });
+    } else {
+      sections = [{
+        label: "Document",
+        text: textData.content?.text || textData.text || ""
+      }];
+    }
   }
 
   if (!sections.length || !sections.some((s) => s.text)) {
@@ -1617,10 +1634,80 @@ async function loadDocumentTextView() {
   documentText.hidden = false;
   canvasContainer.classList.add("text-document-mode");
 
-  const data = await loadExtractedDocumentText();
-  documentText.textContent = data.content?.text || "No text available in this document.";
-  pdfStatus.textContent = "Text mode";
-  loadingMessage.hidden = true;
+  try {
+    loadingMessage.hidden = false;
+    loadingMessage.textContent = "Loading document content and slides...";
+
+    const data = await loadExtractedDocumentText();
+    loadingMessage.hidden = true;
+
+    // 1. Check if document is still processing
+    if (data.processingStatus === "processing" || data.processingStatus === "uploaded") {
+      documentText.innerHTML = `
+        <div class="document-processing-banner" style="text-align: center; padding: 48px 24px; max-width: 520px; margin: 40px auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px;">
+          <div style="font-size: 36px; margin-bottom: 12px; animation: pulse 1.5s infinite;">⚡</div>
+          <h3 style="font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 8px;">Document is being processed</h3>
+          <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin-bottom: 20px;">
+            AI is currently extracting text, dividing into ${data.fileType === 'pptx' ? 'slides' : 'sections'}, and generating 768-dimensional semantic embeddings.
+          </p>
+          <button type="button" class="btn-sm btn-primary" onclick="loadDocumentTextView()" style="padding: 8px 18px; font-weight: 600; cursor: pointer;">
+            🔄 Refresh Status
+          </button>
+        </div>
+      `;
+      pdfStatus.textContent = "Processing...";
+      return;
+    }
+
+    // 2. Check if processing failed
+    if (data.processingStatus === "failed") {
+      documentText.innerHTML = `
+        <div class="document-error-banner" style="text-align: center; padding: 48px 24px; max-width: 520px; margin: 40px auto; background: #fef2f2; border: 1px solid #fecaca; border-radius: 16px;">
+          <div style="font-size: 36px; margin-bottom: 12px;">⚠️</div>
+          <h3 style="font-size: 18px; font-weight: 700; color: #dc2626; margin-bottom: 8px;">Document Extraction Failed</h3>
+          <p style="color: #991b1b; font-size: 13.5px; line-height: 1.5; margin-bottom: 16px;">
+            ${escapeHTML(data.processingError || "Unable to extract readable text from this document archive.")}
+          </p>
+        </div>
+      `;
+      pdfStatus.textContent = "Extraction Failed";
+      return;
+    }
+
+    // 3. Render extracted content (formatted HTML or structured sections/slides)
+    const formattedHtml = data.content?.html || data.formattedHtml;
+    const plainText = data.content?.text || data.text;
+
+    if (formattedHtml) {
+      documentText.innerHTML = formattedHtml;
+    } else if (plainText) {
+      documentText.innerHTML = `<div style="padding: 24px; font-size: 15px; line-height: 1.7; color: #1e293b; max-width: 860px; margin: 0 auto; white-space: pre-wrap;">${escapeHTML(plainText)}</div>`;
+    } else {
+      documentText.innerHTML = `
+        <div style="text-align: center; padding: 48px 24px; color: #64748b;">
+          <div style="font-size: 36px; margin-bottom: 8px;">📄</div>
+          <h3 style="font-size: 16px; font-weight: 600; color: #1e293b;">No text available in this document</h3>
+          <p style="font-size: 13px;">The uploaded file does not contain readable text content.</p>
+        </div>
+      `;
+    }
+
+    const count = data.sections?.length || data.pageCount || 1;
+    const unit = data.fileType === "pptx" ? (count === 1 ? "Slide" : "Slides") : (data.fileType === "docx" ? (count === 1 ? "Section" : "Sections") : (count === 1 ? "Page" : "Pages"));
+    pdfStatus.textContent = `${count} ${unit}`;
+
+  } catch (err) {
+    console.error("Failed to load document text view:", err);
+    documentText.innerHTML = `
+      <div style="text-align: center; padding: 48px 24px; color: #dc2626;">
+        <div style="font-size: 36px; margin-bottom: 8px;">⚠️</div>
+        <h3>Failed to load document text</h3>
+        <p style="font-size: 13px; color: #64748b;">${escapeHTML(err.message)}</p>
+      </div>
+    `;
+    pdfStatus.textContent = "Error";
+    loadingMessage.hidden = true;
+  }
 }
 
 /* ============================================================
@@ -1678,8 +1765,8 @@ function formatMarkdown(text) {
   html = html.replace(/^## (.*$)/gim, "<h3 style='font-size: 15px; font-weight: 750; color: #0f172a; margin: 16px 0 8px;'>$1</h3>");
   html = html.replace(/^# (.*$)/gim, "<h2 style='font-size: 16px; font-weight: 800; color: #0f172a; margin: 18px 0 10px;'>$1</h2>");
 
-  // Page and Slide Citations Badges
-  html = html.replace(/\[(Page\s+\d+(?:[,\s-]+\d+)*|Slide\s+\d+(?:[,\s-]+\d+)*)\]/gi, "<span class='page-citation-badge' style='display: inline-flex; align-items: center; background: #e0e7ff; color: #4338ca; font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 0 2px;'>[$1]</span>");
+  // Page, Slide and Section Citations Badges
+  html = html.replace(/\[((?:Page|Slide|Section)\s+\d+(?:[,\s-]+\d+)*)\]/gi, "<span class='page-citation-badge' style='display: inline-flex; align-items: center; background: #e0e7ff; color: #4338ca; font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 0 2px;'>[$1]</span>");
 
   // Bold & Italic
   html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");

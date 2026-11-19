@@ -12,6 +12,7 @@ const multer = require("multer");
 const fs = require("fs");
 const os = require("os");
 const officeParser = require("officeparser");
+const documentProcessor = require("./services/document/document-processor");
 const piperTtsProvider =
   require("./services/tts/piper-tts-provider");
 const ragService =
@@ -2620,42 +2621,13 @@ app.get("/api/classrooms/:id/semantic-search", requireAuth, async (req, res) => 
 });
 
 async function extractDocumentPages(filePath, originalFilename = "") {
-  const pages = [];
-  const ext = path.extname(originalFilename || filePath).toLowerCase();
-  const isPdf = ext === ".pdf";
-  const isPptx = ext === ".pptx";
-
   try {
-    const ast = await officeParser.parseOffice(filePath);
-    if (ast && Array.isArray(ast.content) && ast.content.length > 0) {
-      ast.content.forEach((node, idx) => {
-        const text = String(node.text || "").trim();
-        if (text) {
-          if (isPdf) {
-            const pageNum = Number(node.metadata?.pageNumber) || (idx + 1);
-            pages.push({ pageNumber: pageNum, text });
-          } else if (isPptx) {
-            const slideNum = Number(node.metadata?.slideNumber) || (idx + 1);
-            pages.push({ slideNumber: slideNum, text });
-          } else {
-            pages.push({ sectionNumber: idx + 1, text });
-          }
-        }
-      });
-    }
-
-    if (pages.length === 0 && ast) {
-      const parsedText = await ast.to("text");
-      const fallbackText = String(parsedText?.value || "").trim();
-      if (fallbackText) {
-        pages.push({ text: fallbackText });
-      }
-    }
+    const extracted = await documentProcessor.extractDocument(filePath, originalFilename);
+    return documentProcessor.toPageChunks(extracted);
   } catch (err) {
-    console.warn("Could not extract pages via officeParser:", err.message);
+    console.warn("Could not extract pages via documentProcessor:", err.message);
+    return [{ text: originalFilename || "Document" }];
   }
-
-  return pages;
 }
 
 // ============================================================
@@ -2672,12 +2644,13 @@ app.get("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       });
     }
 
+    const numericPdfId = parseInt(req.params.id, 10);
     const result = await pool.query(
       `SELECT id, role, message, created_at as "createdAt"
        FROM chat_messages
        WHERE user_id = $1 AND pdf_id = $2
-       ORDER BY created_at ASC`,
-      [req.user.id, req.params.id]
+       ORDER BY created_at ASC, id ASC`,
+      [req.user.id, numericPdfId]
     );
 
     return res.status(200).json({
@@ -2711,27 +2684,20 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       });
     }
 
-    // 1. Save student's user message
-    const userMsgResult = await pool.query(
-      `INSERT INTO chat_messages (user_id, pdf_id, role, message)
-       VALUES ($1, $2, 'user', $3)
-       RETURNING id, role, message, created_at as "createdAt"`,
-      [req.user.id, req.params.id, message]
-    );
-    const userMsg = userMsgResult.rows[0];
+    const numericPdfId = parseInt(req.params.id, 10);
 
-    // 2. Fetch past conversation turns for grounding
+    // 1. Fetch past conversation turns for grounding
     const historyResult = await pool.query(
       `SELECT role, message
        FROM chat_messages
        WHERE user_id = $1 AND pdf_id = $2
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT 8`,
-      [req.user.id, req.params.id]
+      [req.user.id, numericPdfId]
     );
     const history = historyResult.rows.reverse();
 
-    // 3. Check for vector embeddings in pdf_chunks (Hybrid RAG)
+    // 2. Check for vector embeddings in pdf_chunks (Hybrid RAG)
     let selectedChunks = null;
     try {
       const chunkCountRes = await pool.query(
@@ -2752,17 +2718,21 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
           );
           selectedChunks = vectorRes.rows.map(r => ({
             id: r.chunk_index,
-            pageNumber: r.page_start,
+            pageNumber: r.metadata?.pageNumber || r.page_start,
+            slideNumber: r.metadata?.slideNumber || null,
+            sectionNumber: r.metadata?.sectionNumber || null,
             text: r.content
           }));
         } else {
           const allChunks = await pool.query(
-            "SELECT chunk_index, page_start, content, embedding FROM pdf_chunks WHERE pdf_id = $1",
+            "SELECT chunk_index, page_start, content, metadata, embedding FROM pdf_chunks WHERE pdf_id = $1",
             [document.id]
           );
           const scored = allChunks.rows.map(r => ({
             id: r.chunk_index,
-            pageNumber: r.page_start,
+            pageNumber: r.metadata?.pageNumber || r.page_start,
+            slideNumber: r.metadata?.slideNumber || null,
+            sectionNumber: r.metadata?.sectionNumber || null,
             text: r.content,
             score: embeddingService.cosineSimilarity(queryEmb, r.embedding)
           })).sort((a, b) => b.score - a.score);
@@ -2794,9 +2764,9 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       }
     }
 
-    // 4. Check persistent answer cache or generate with AI router
+    // 3. Check persistent answer cache or generate with AI router
     const contentHash = document.file_hash || document.checksum || `doc-${document.id}`;
-    const chunkIds = (selectedChunks || []).map(c => c.id || c.pageNumber).join("-");
+    const chunkIds = (selectedChunks || []).map(c => c.id || c.pageNumber || c.slideNumber || c.sectionNumber).join("-");
     const contextFingerprint = aiCacheService.hashString(chunkIds || "full-doc");
 
     let cachedAnswer = null;
@@ -2849,14 +2819,34 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       }
     }
 
-    // 5. Persist assistant message
-    const botMsgResult = await pool.query(
-      `INSERT INTO chat_messages (user_id, pdf_id, role, message)
-       VALUES ($1, $2, 'assistant', $3)
-       RETURNING id, role, message, created_at as "createdAt"`,
-      [req.user.id, req.params.id, assistantAnswer]
-    );
-    const botMsg = botMsgResult.rows[0];
+    // 4. Atomically persist both user question AND assistant response
+    let userMsg, botMsg;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const userMsgResult = await client.query(
+        `INSERT INTO chat_messages (user_id, pdf_id, role, message)
+         VALUES ($1, $2, 'user', $3)
+         RETURNING id, role, message, created_at as "createdAt"`,
+        [req.user.id, numericPdfId, message]
+      );
+      userMsg = userMsgResult.rows[0];
+
+      const botMsgResult = await client.query(
+        `INSERT INTO chat_messages (user_id, pdf_id, role, message)
+         VALUES ($1, $2, 'assistant', $3)
+         RETURNING id, role, message, created_at as "createdAt"`,
+        [req.user.id, numericPdfId, assistantAnswer]
+      );
+      botMsg = botMsgResult.rows[0];
+
+      await client.query("COMMIT");
+    } catch (txErr) {
+      await client.query("ROLLBACK");
+      throw txErr;
+    } finally {
+      client.release();
+    }
 
     return res.status(200).json({
       success: true,
@@ -2887,9 +2877,10 @@ app.delete("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       });
     }
 
+    const numericPdfId = parseInt(req.params.id, 10);
     await pool.query(
       `DELETE FROM chat_messages WHERE user_id = $1 AND pdf_id = $2`,
-      [req.user.id, req.params.id]
+      [req.user.id, numericPdfId]
     );
 
     return res.status(200).json({
@@ -2928,19 +2919,14 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
       });
     }
 
-    let parsedText;
+    let extracted;
     const { filePath, isTemp } = await getDocumentLocalPath(document);
 
     try {
-      const ast =
-        await officeParser.parseOffice(filePath);
-
-      parsedText =
-        await ast.to("text");
-
-      if (typeof parsedText.value !== "string") {
-        throw new Error("Office document parser returned invalid text.");
-      }
+      extracted = await documentProcessor.extractDocument(
+        filePath,
+        document.original_filename || document.filename
+      );
     } finally {
       if (isTemp && fs.existsSync(filePath)) {
         try { fs.unlinkSync(filePath); } catch (_) {}
@@ -2949,14 +2935,24 @@ app.get("/api/pdfs/:id/text", requireAuth, async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      text: parsedText.value
+      fileType: extracted.fileType,
+      title: extracted.title,
+      pageCount: extracted.pageCount,
+      text: extracted.fullText,
+      content: {
+        text: extracted.fullText,
+        html: extracted.formattedHtml
+      },
+      sections: extracted.sections,
+      processingStatus: document.processing_status,
+      processingError: document.processing_error
     });
   } catch (error) {
-    console.error("Office document text extraction error:", error);
+    console.error("Document text extraction error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Unable to extract text from this document."
+      message: error.message || "Unable to extract text from this document."
     });
   }
 });
@@ -4653,6 +4649,35 @@ app.get("/api/admin/ai/status", requireAuth, requireRole(["admin"]), (req, res) 
   } catch (error) {
     console.error("Admin AI status error:", error);
     return res.status(500).json({ success: false, message: "Unable to retrieve AI status." });
+  }
+});
+
+// Admin AI Provider Diagnostic Testing
+app.post("/api/admin/ai/test", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const provider = String(req.body?.provider || "all").toLowerCase();
+    if (provider === "all") {
+      const results = {};
+      for (const p of ["gemini", "groq", "cloudflare"]) {
+        results[p] = await aiProviderRouter.testProvider(p);
+      }
+      return res.status(200).json({
+        success: true,
+        results
+      });
+    }
+
+    const result = await aiProviderRouter.testProvider(provider);
+    return res.status(200).json({
+      success: true,
+      result
+    });
+  } catch (error) {
+    console.error("Admin AI test error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to execute AI provider test."
+    });
   }
 });
 

@@ -56,7 +56,7 @@ async function generateText({
     model,
     messages,
     temperature,
-    max_tokens: maxOutputTokens
+    max_tokens: Math.max(Number(maxOutputTokens) || 2048, 512)
   };
 
   const controller = new AbortController();
