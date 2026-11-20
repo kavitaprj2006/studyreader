@@ -1185,20 +1185,29 @@ function connectSummarySegmentedBar() {
   document.querySelectorAll(".segmented-mode-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       stopAllSpeechAudio();
+      const wasActive = btn.classList.contains("active");
       document.querySelectorAll(".segmented-mode-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       const type = btn.getAttribute("data-summary-type") || btn.getAttribute("data-mode") || "quick";
       if (summaryContent) summaryContent.scrollTop = 0;
-      runSummary(type);
+      // Re-clicking active tab triggers a fresh backend cache check
+      runSummary(type, { forceBackend: wasActive });
     });
   });
 }
 
-async function runSummary(summaryType = "quick") {
+async function runSummary(summaryType = "quick", options = {}) {
+  const forceBackend = Boolean(options.forceBackend);
   stopAllSpeechAudio();
 
-  if (summaryCache[summaryType]) {
-    renderSummaryOutput(summaryCache[summaryType].answer, summaryType, summaryCache[summaryType].coverage);
+  // If already in browser memory and not forced, display instantly from memory cache
+  if (summaryCache[summaryType] && !forceBackend) {
+    const mem = summaryCache[summaryType];
+    renderSummaryOutput(mem.answer, summaryType, mem.coverage, {
+      origin: "memory",
+      hitCount: mem.hitCount,
+      cached: mem.cached
+    });
     return;
   }
 
@@ -1210,8 +1219,8 @@ async function runSummary(summaryType = "quick") {
   summaryContent.innerHTML = `
     <div style="padding: 24px; text-align: center; color: #6366f1;">
       <span style="font-size: 24px; display: block; margin-bottom: 8px;">⏳</span>
-      <p style="font-size: 13.5px; font-weight: 600;">Synthesizing full-document ${summaryType} summary...</p>
-      <p style="font-size: 12px; color: #64748b; margin-top: 4px;">Analyzing all pages and intermediate section digests...</p>
+      <p style="font-size: 13.5px; font-weight: 600;">Checking persistent AI cache & synthesizing ${summaryType} summary...</p>
+      <p style="font-size: 12px; color: #64748b; margin-top: 4px;">Querying PostgreSQL cache and intermediate digests...</p>
     </div>
   `;
 
@@ -1226,11 +1235,19 @@ async function runSummary(summaryType = "quick") {
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || "Failed to generate summary.");
 
+    const origin = data.cached ? "postgres_cache" : "gemini";
     summaryCache[summaryType] = {
       answer: data.answer,
-      coverage: data.coverage
+      coverage: data.coverage,
+      cached: Boolean(data.cached),
+      hitCount: data.hitCount || 0
     };
-    renderSummaryOutput(data.answer, summaryType, data.coverage);
+
+    renderSummaryOutput(data.answer, summaryType, data.coverage, {
+      origin,
+      hitCount: data.hitCount || 0,
+      cached: Boolean(data.cached)
+    });
 
   } catch (error) {
     summaryContent.innerHTML = `
@@ -1241,7 +1258,7 @@ async function runSummary(summaryType = "quick") {
   }
 }
 
-function renderSummaryOutput(markdownText, type, coverage = null) {
+function renderSummaryOutput(markdownText, type, coverage = null, meta = {}) {
   summaryContent.innerHTML = formatMarkdown(markdownText);
   summaryContent.scrollTop = 0;
 
@@ -1266,15 +1283,48 @@ function renderSummaryOutput(markdownText, type, coverage = null) {
       badge.innerHTML = `✓ Pages ${rangeStr}${batchStr}`;
       summaryAudioBar.appendChild(badge);
     }
+
+    // Explicit cache provenance badge
+    const cacheBadge = document.createElement("span");
+    cacheBadge.className = "summary-coverage-badge";
+    cacheBadge.style.marginLeft = "6px";
+    if (meta.origin === "postgres_cache") {
+      cacheBadge.style.background = "#dcfce7";
+      cacheBadge.style.color = "#15803d";
+      cacheBadge.style.borderColor = "#86efac";
+      cacheBadge.innerHTML = `⚡ DB Cache Hit (${meta.hitCount || 1} calls saved)`;
+    } else if (meta.origin === "memory") {
+      cacheBadge.style.background = "#f1f5f9";
+      cacheBadge.style.color = "#475569";
+      cacheBadge.style.borderColor = "#cbd5e1";
+      cacheBadge.innerHTML = `💻 Browser Memory`;
+    } else if (meta.origin === "gemini") {
+      cacheBadge.style.background = "#ede9fe";
+      cacheBadge.style.color = "#6d28d9";
+      cacheBadge.style.borderColor = "#c4b5fd";
+      cacheBadge.innerHTML = `✨ Gemini Generated`;
+    }
+    if (meta.origin) {
+      summaryAudioBar.appendChild(cacheBadge);
+    }
   }
 
-  // Attach action bar (Copy & Print/Export) at bottom of content
+  // Attach action bar (Copy, Print/Export, and Re-check Cache) at bottom of content
   const exportBar = document.createElement("div");
   exportBar.style.display = "flex";
   exportBar.style.gap = "8px";
   exportBar.style.marginTop = "16px";
   exportBar.style.paddingTop = "12px";
   exportBar.style.borderTop = "1px solid #e2e8f0";
+
+  const refreshBtn = document.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className = "chat-bubble-action-btn";
+  refreshBtn.innerHTML = "<span>🔄</span> Re-check DB Cache";
+  refreshBtn.title = "Verify directly with PostgreSQL AI cache";
+  refreshBtn.addEventListener("click", () => {
+    runSummary(type, { forceBackend: true });
+  });
 
   const copyBtn = document.createElement("button");
   copyBtn.type = "button";
@@ -1309,6 +1359,7 @@ function renderSummaryOutput(markdownText, type, coverage = null) {
     printWindow.print();
   });
 
+  exportBar.appendChild(refreshBtn);
   exportBar.appendChild(copyBtn);
   exportBar.appendChild(printBtn);
   summaryContent.appendChild(exportBar);
@@ -1320,8 +1371,8 @@ function renderSummaryOutput(markdownText, type, coverage = null) {
 
 let overviewCache = null;
 
-async function runOverview() {
-  if (overviewCache) {
+async function runOverview(forceBackend = false) {
+  if (overviewCache && !forceBackend) {
     renderOverviewOutput(overviewCache);
     return;
   }
@@ -1329,7 +1380,7 @@ async function runOverview() {
   overviewContent.innerHTML = `
     <div style="padding: 24px; text-align: center; color: #6366f1;">
       <span style="font-size: 24px; display: block; margin-bottom: 8px;">⏳</span>
-      <p style="font-size: 13.5px; font-weight: 600;">Synthesizing curriculum overview & units covered...</p>
+      <p style="font-size: 13.5px; font-weight: 600;">Checking AI cache & synthesizing curriculum overview...</p>
     </div>
   `;
 

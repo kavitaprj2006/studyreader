@@ -60,18 +60,34 @@ async function getCachedSummary({
     ]);
 
     if (res.rows.length === 0) {
-      // Record miss asynchronously
-      pool.query(`UPDATE ai_cache_stats SET metric_value = metric_value + 1 WHERE metric_name = 'summary_misses'`).catch(() => {});
+      // Record miss
+      try {
+        await pool.query(`UPDATE ai_cache_stats SET metric_value = metric_value + 1, updated_at = NOW() WHERE metric_name = 'summary_misses'`);
+      } catch (mErr) {
+        console.warn("[AICacheService] Failed to increment summary miss stats:", mErr.message);
+      }
       return null;
     }
 
     const row = res.rows[0];
 
-    // Increment hit counter asynchronously
-    pool.query(`
-      UPDATE ai_summary_cache SET hit_count = hit_count + 1, updated_at = NOW() WHERE id = $1;
-      UPDATE ai_cache_stats SET metric_value = metric_value + 1 WHERE metric_name = 'summary_hits';
-    `, [row.id]).catch(() => {});
+    // Atomically increment hit counter in both per-record and aggregate tables
+    try {
+      await pool.query(`
+        WITH upd_entry AS (
+          UPDATE ai_summary_cache
+          SET hit_count = hit_count + 1, updated_at = NOW()
+          WHERE id = $1
+          RETURNING id
+        )
+        UPDATE ai_cache_stats
+        SET metric_value = metric_value + 1, updated_at = NOW()
+        WHERE metric_name = 'summary_hits'
+          AND EXISTS (SELECT 1 FROM upd_entry)
+      `, [row.id]);
+    } catch (hitErr) {
+      console.warn(`[AICacheService:Diagnostic] Failed atomic hit increment for summary row ${row.id}:`, hitErr.message);
+    }
 
     return {
       text: row.summary_text,
@@ -172,17 +188,33 @@ async function getCachedAnswer({
     ]);
 
     if (res.rows.length === 0) {
-      pool.query(`UPDATE ai_cache_stats SET metric_value = metric_value + 1 WHERE metric_name = 'answer_misses'`).catch(() => {});
+      try {
+        await pool.query(`UPDATE ai_cache_stats SET metric_value = metric_value + 1, updated_at = NOW() WHERE metric_name = 'answer_misses'`);
+      } catch (mErr) {
+        console.warn("[AICacheService] Failed to increment answer miss stats:", mErr.message);
+      }
       return null;
     }
 
     const row = res.rows[0];
 
-    // Increment hit counter asynchronously
-    pool.query(`
-      UPDATE ai_answer_cache SET hit_count = hit_count + 1 WHERE id = $1;
-      UPDATE ai_cache_stats SET metric_value = metric_value + 1 WHERE metric_name = 'answer_hits';
-    `, [row.id]).catch(() => {});
+    // Atomically increment hit counter in both per-record and aggregate tables
+    try {
+      await pool.query(`
+        WITH upd_entry AS (
+          UPDATE ai_answer_cache
+          SET hit_count = hit_count + 1
+          WHERE id = $1
+          RETURNING id
+        )
+        UPDATE ai_cache_stats
+        SET metric_value = metric_value + 1, updated_at = NOW()
+        WHERE metric_name = 'answer_hits'
+          AND EXISTS (SELECT 1 FROM upd_entry)
+      `, [row.id]);
+    } catch (hitErr) {
+      console.warn(`[AICacheService:Diagnostic] Failed atomic hit increment for answer row ${row.id}:`, hitErr.message);
+    }
 
     return {
       text: row.answer_text,
@@ -287,39 +319,55 @@ async function getCacheMetrics() {
       statsMap[r.metric_name] = parseInt(r.metric_value, 10);
     });
 
-    const summaryHits = statsMap.summary_hits || summaryCountRes.rows[0].total_hits || 0;
-    const summaryMisses = statsMap.summary_misses || 0;
-    const answerHits = statsMap.answer_hits || answerCountRes.rows[0].total_hits || 0;
-    const answerMisses = statsMap.answer_misses || 0;
+    const summaryHits = Math.max(
+      Number(statsMap.summary_hits) || 0,
+      Number(summaryCountRes.rows[0]?.total_hits) || 0
+    );
+    const summaryMisses = Number(statsMap.summary_misses) || 0;
+    const answerHits = Math.max(
+      Number(statsMap.answer_hits) || 0,
+      Number(answerCountRes.rows[0]?.total_hits) || 0
+    );
+    const answerMisses = Number(statsMap.answer_misses) || 0;
 
     const totalHits = summaryHits + answerHits;
     const totalRequests = totalHits + summaryMisses + answerMisses;
-    const hitRate = totalRequests > 0 ? ((totalHits / totalRequests) * 100).toFixed(1) : "0.0";
+    const hitRate = totalRequests > 0 ? `${((totalHits / totalRequests) * 100).toFixed(1)}%` : "N/A";
+
+    const summaryRequests = summaryHits + summaryMisses;
+    const summaryHitRate = summaryRequests > 0 ? `${((summaryHits / summaryRequests) * 100).toFixed(1)}%` : "N/A";
+
+    const answerRequests = answerHits + answerMisses;
+    const answerHitRate = answerRequests > 0 ? `${((answerHits / answerRequests) * 100).toFixed(1)}%` : "N/A";
 
     return {
       summaryCacheEntries: summaryCountRes.rows[0].count,
       summaryHits,
       summaryMisses,
+      summaryHitRate,
       answerCacheEntries: answerCountRes.rows[0].count,
       answerHits,
       answerMisses,
+      answerHitRate,
       totalHits,
       totalMisses: summaryMisses + answerMisses,
-      hitRate: `${hitRate}%`,
+      hitRate,
       estimatedSavedAiCalls: totalHits
     };
   } catch (err) {
-    console.warn("[AICacheService] Error retrieving cache metrics:", err.message);
+    console.warn("[AICacheService:Diagnostic] Error retrieving cache metrics:", err.message);
     return {
       summaryCacheEntries: 0,
       summaryHits: 0,
       summaryMisses: 0,
+      summaryHitRate: "N/A",
       answerCacheEntries: 0,
       answerHits: 0,
       answerMisses: 0,
+      answerHitRate: "N/A",
       totalHits: 0,
       totalMisses: 0,
-      hitRate: "0.0%",
+      hitRate: "N/A",
       estimatedSavedAiCalls: 0
     };
   }

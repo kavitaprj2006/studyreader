@@ -663,7 +663,7 @@
                 <article class="stat-card">
                   <div class="stat-icon green">💬</div>
                   <div>
-                    <span class="stat-label">Answer Cache Hit Rate</span>
+                    <span class="stat-label">Answer Total Hits</span>
                     <strong class="stat-value" id="cache-answer-hitrate">0%</strong>
                   </div>
                 </article>
@@ -1185,7 +1185,7 @@
         if (cacheRes.ok) {
           const cData = await cacheRes.json();
           const cm = cData.metrics || {};
-          document.getElementById("cache-summary-hitrate").textContent = `${cm.hitRate ?? '0%'}`;
+          document.getElementById("cache-summary-hitrate").textContent = cm.summaryHitRate ?? cm.hitRate ?? 'N/A';
           document.getElementById("cache-summary-hits").textContent = `${cm.summaryHits ?? 0} hits`;
           document.getElementById("cache-answer-hitrate").textContent = `${cm.answerHits ?? 0} hits`;
           document.getElementById("cache-saved-calls").textContent = `${cm.estimatedSavedAiCalls ?? 0} calls`;

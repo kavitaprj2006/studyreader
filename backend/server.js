@@ -1746,6 +1746,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
 
     const pdf = result.rows[0];
     clearPendingUpload(req, filename);
+    await aiCacheService.invalidateDocumentCache(existingPdfId);
 
     // Enqueue durable background processing job for replaced document
     try {
@@ -2765,12 +2766,16 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
     }
 
     // 3. Check persistent answer cache or generate with AI router
-    const contentHash = document.file_hash || document.checksum || `doc-${document.id}`;
+    const contentHash = document.md5_hash || document.file_hash || document.checksum || `doc-${document.id}`;
     const chunkIds = (selectedChunks || []).map(c => c.id || c.pageNumber || c.slideNumber || c.sectionNumber).join("-");
     const contextFingerprint = aiCacheService.hashString(chunkIds || "full-doc");
 
+    // Restrict answer caching to standalone document-grounded questions where prior
+    // conversation history cannot bias or alter the prompt context
+    const isStandaloneQuestion = !history || history.length === 0;
+
     let cachedAnswer = null;
-    if (!history || history.length <= 1) {
+    if (isStandaloneQuestion) {
       cachedAnswer = await aiCacheService.getCachedAnswer({
         documentId: document.id,
         question: message,
@@ -2805,17 +2810,21 @@ app.post("/api/pdfs/:id/chat", requireAuth, async (req, res) => {
       aiModel = aiResult.model || "gemini";
       aiSources = aiResult.sources || [];
 
-      if (!history || history.length <= 1) {
-        aiCacheService.setCachedAnswer({
-          documentId: document.id,
-          question: message,
-          contextFingerprint,
-          contentHash,
-          answerText: assistantAnswer,
-          sources: aiSources,
-          model: aiModel,
-          provider: aiProvider
-        }).catch(() => {});
+      if (isStandaloneQuestion && assistantAnswer) {
+        try {
+          await aiCacheService.setCachedAnswer({
+            documentId: document.id,
+            question: message,
+            contextFingerprint,
+            contentHash,
+            answerText: assistantAnswer,
+            sources: aiSources,
+            model: aiModel,
+            provider: aiProvider
+          });
+        } catch (cacheErr) {
+          console.warn("[Server:Diagnostic] Answer cache store error:", cacheErr.message);
+        }
       }
     }
 
@@ -3221,7 +3230,7 @@ app.post(
       }
 
       // Check persistent summary cache
-      const contentHash = document.file_hash || document.checksum || `doc-${document.id}`;
+      const contentHash = document.md5_hash || document.file_hash || document.checksum || `doc-${document.id}`;
       if (mode === "summary" || mode === "overview") {
         const cachedSummary = await aiCacheService.getCachedSummary({
           documentId: document.id,
@@ -3276,15 +3285,19 @@ app.post(
       });
 
       if ((mode === "summary" || mode === "overview") && result.answer) {
-        aiCacheService.setCachedSummary({
-          documentId: document.id,
-          summaryType: summaryType || "quick",
-          contentHash,
-          summaryText: result.answer,
-          sources: result.sources,
-          model: result.model || "gemini",
-          provider: result.provider || "gemini"
-        }).catch(() => {});
+        try {
+          await aiCacheService.setCachedSummary({
+            documentId: document.id,
+            summaryType: summaryType || "quick",
+            contentHash,
+            summaryText: result.answer,
+            sources: result.sources,
+            model: result.model || "gemini",
+            provider: result.provider || "gemini"
+          });
+        } catch (cacheErr) {
+          console.warn("[Server] Summary cache store error:", cacheErr.message);
+        }
       }
 
       return res.status(200).json({
