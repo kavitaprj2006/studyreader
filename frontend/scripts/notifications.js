@@ -164,11 +164,19 @@
 
   function openNotificationTarget(notif) {
     if (!notif) return;
+    const isPagesSubdir = window.location.pathname.includes("/pages/");
     if (notif.resourceId) {
-      const isPagesSubdir = window.location.pathname.includes("/pages/");
       const targetUrl = isPagesSubdir
         ? `../pdf-study/index.html?id=${encodeURIComponent(notif.resourceId)}`
         : `/frontend/pages/pdf-study/index.html?id=${encodeURIComponent(notif.resourceId)}`;
+      window.location.href = targetUrl;
+    } else if (notif.classroomId) {
+      const isTeacher = window.location.pathname.includes("teacher-dashboard");
+      const targetUrl = isTeacher
+        ? `../teacher-dashboard/index.html?view=classrooms`
+        : (isPagesSubdir
+            ? `../library/index.html?classroomId=${encodeURIComponent(notif.classroomId)}`
+            : `/frontend/pages/library/index.html?classroomId=${encodeURIComponent(notif.classroomId)}`);
       window.location.href = targetUrl;
     }
   }
@@ -219,7 +227,7 @@
             <p style="font-size: 12px; color: ${textColor}; margin: 0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHTML(n.message)}</p>
             <div style="display: flex; align-items: center; gap: 6px; margin-top: 5px;">
               ${n.classroomName ? `<span style="display: inline-block; font-size: 10px; color: #2563eb; font-weight: 600; background: #eff6ff; padding: 2px 7px; border-radius: 4px;">🏛 ${escapeHTML(n.classroomName)}</span>` : ""}
-              ${n.resourceId ? `<span style="font-size: 10px; color: #64748b;">Click to view ↗</span>` : ""}
+              ${n.resourceId ? `<span style="font-size: 10px; color: #64748b;">View document ↗</span>` : (n.classroomId ? `<span style="font-size: 10px; color: #64748b;">View classroom ↗</span>` : "")}
             </div>
           </div>
           ${isUnread ? `<span style="width: 8px; height: 8px; background: #2563eb; border-radius: 50%; position: absolute; right: 12px; top: 16px;"></span>` : ""}

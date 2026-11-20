@@ -390,6 +390,9 @@ if (joinClassForm) {
       joinClassForm.reset();
       showToast(data.message || "Joined classroom successfully!");
       await loadDashboardData();
+      if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
+        window.StudyReaderNotifications.fetch();
+      }
 
     } catch (err) {
       console.error("Join classroom error:", err);
@@ -507,6 +510,9 @@ if (uploadStudentDocForm) {
       uploadStudentDocForm.reset();
       showToast(`Uploaded '${data.pdf.originalFilename}'!`);
       await loadDashboardData();
+      if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
+        window.StudyReaderNotifications.fetch();
+      }
 
     } catch (err) {
       console.error("Upload error:", err);

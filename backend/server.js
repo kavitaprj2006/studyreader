@@ -1027,7 +1027,21 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
       );
 
     const subjectId = req.body.subjectId || req.body.subject_id || null;
-    const classroomId = req.body.classroomId || req.body.classroom_id || null;
+    let classroomId = req.body.classroomId || req.body.classroom_id || null;
+
+    // If classroomId not explicitly provided, attempt to resolve from subject
+    if (!classroomId && subjectId) {
+      try {
+        const csRes = await pool.query(
+          "SELECT classroom_id FROM classroom_subjects WHERE subject_id = $1 AND is_archived = FALSE LIMIT 1",
+          [subjectId]
+        );
+        if (csRes.rows.length > 0) {
+          classroomId = csRes.rows[0].classroom_id;
+        }
+      } catch (_) {}
+    }
+
     const category = req.body.category === "pyq" ? "pyq" : "resource";
     const academicYear = req.body.academicYear || req.body.academic_year || null;
     const semester = req.body.semester || null;
@@ -3798,7 +3812,7 @@ app.post("/api/classrooms/join", requireAuth, async (req, res) => {
 
     // Look up active classroom
     const classResult = await pool.query(
-      `SELECT c.id, c.name, c.code, c.semester, c.section, c.description, u.name as teacher_name
+      `SELECT c.id, c.name, c.code, c.semester, c.section, c.description, c.teacher_id, u.name as teacher_name
        FROM classrooms c
        JOIN users u ON c.teacher_id = u.id
        WHERE UPPER(c.code) = $1 AND c.is_archived = FALSE
@@ -3842,6 +3856,35 @@ app.post("/api/classrooms/join", requireAuth, async (req, res) => {
       `INSERT INTO classroom_members (classroom_id, student_id) VALUES ($1, $2)`,
       [classroom.id, req.user.id]
     );
+
+    // 1. Notify the teacher that a new student joined
+    if (classroom.teacher_id && String(classroom.teacher_id) !== String(req.user.id)) {
+      const studentName = req.user.name || "A student";
+      try {
+        await createNotification(
+          classroom.teacher_id,
+          classroom.id,
+          "Student Joined Classroom",
+          `${studentName} enrolled in your classroom ${classroom.name}.`,
+          "classroom_joined"
+        );
+      } catch (notifErr) {
+        console.warn("[Join] Failed to notify teacher:", notifErr.message);
+      }
+    }
+
+    // 2. Notify the student confirming successful enrollment
+    try {
+      await createNotification(
+        req.user.id,
+        classroom.id,
+        "Classroom Enrolled",
+        `You successfully enrolled in ${classroom.name}! All classroom materials are now accessible in your library.`,
+        "classroom_joined"
+      );
+    } catch (notifErr) {
+      console.warn("[Join] Failed to notify student:", notifErr.message);
+    }
 
     return res.status(200).json({
       success: true,
@@ -5040,12 +5083,8 @@ async function notifyClassroomStudents(optionsOrClassroomId, titleArg, messageAr
       [classroomId, excludeUserId]
     );
 
-    if (members.rows.length === 0) {
-      return;
-    }
-
-    const title = titleArg || "New Study Material Added";
-    const message = resourceTitle 
+    const studentTitle = titleArg || "New Study Material Added";
+    const studentMessage = resourceTitle 
       ? `Your teacher uploaded ${resourceTitle} in ${classroomName}.`
       : (messageArg || `New material was uploaded to ${classroomName}.`);
 
@@ -5053,8 +5092,25 @@ async function notifyClassroomStudents(optionsOrClassroomId, titleArg, messageAr
       await createNotification(
         row.student_id,
         classroomId,
-        title,
-        message,
+        studentTitle,
+        studentMessage,
+        type,
+        resourceId
+      );
+    }
+
+    // Also notify the teacher confirming publication
+    if (excludeUserId) {
+      const teacherTitle = "Resource Published";
+      const teacherMessage = resourceTitle 
+        ? `You successfully published ${resourceTitle} in ${classroomName}.`
+        : `Material was uploaded to ${classroomName}.`;
+
+      await createNotification(
+        excludeUserId,
+        classroomId,
+        teacherTitle,
+        teacherMessage,
         type,
         resourceId
       );

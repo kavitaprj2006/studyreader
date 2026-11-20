@@ -623,6 +623,9 @@ if (uploadResourceForm) {
               uploadResourceForm.reset();
               showToast("Resource replaced / kept successfully!");
               await loadClassrooms();
+              if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
+                window.StudyReaderNotifications.fetch();
+              }
             },
             onCancel: () => {
               console.log("Duplicate upload canceled.");
@@ -643,6 +646,9 @@ if (uploadResourceForm) {
       uploadResourceForm.reset();
       showToast(`Published '${data.pdf.originalFilename}' successfully!`);
       await loadClassrooms();
+      if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
+        window.StudyReaderNotifications.fetch();
+      }
 
     } catch (err) {
       console.error("Upload error:", err);
