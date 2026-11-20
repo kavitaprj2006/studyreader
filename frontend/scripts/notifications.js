@@ -2,12 +2,14 @@
  * StudyReader — Unified Notification Bell Component
  * 
  * Features:
- * - PostgreSQL backed notifications with unread count badge
+ * - PostgreSQL backed persistent notifications with unread count badge
  * - Accessible popover panel with real-time mark-as-read
+ * - Direct click-to-open resource in StudyReader workspace
  * - "Mark all as read" bulk action
  * - Relative timestamp formatting
- * - Auto-polling every 30 seconds
- * - Click outside to dismiss
+ * - Auto-polling every 30 seconds with automatic cleanup on page unload
+ * - Visual contrast for read vs unread notifications
+ * - Click outside & Escape key dismiss
  */
 
 (function () {
@@ -23,6 +25,8 @@
   let unreadCount = 0;
   let dropdownEl = null;
   let isOpen = false;
+  let isLoading = true;
+  let pollInterval = null;
 
   function timeAgo(dateString) {
     if (!dateString) return "";
@@ -51,11 +55,17 @@
 
   function getNotificationIcon(type) {
     switch (type) {
+      case "resource_uploaded":
       case "material_added":
         return "📄";
+      case "resource_updated":
+        return "🔄";
       case "classroom_joined":
       case "classroom_left":
         return "🏛";
+      case "assignment_added":
+        return "📝";
+      case "classroom_announcement":
       case "announcement":
       default:
         return "📢";
@@ -152,9 +162,30 @@
     }
   }
 
+  function openNotificationTarget(notif) {
+    if (!notif) return;
+    if (notif.resourceId) {
+      const isPagesSubdir = window.location.pathname.includes("/pages/");
+      const targetUrl = isPagesSubdir
+        ? `../pdf-study/index.html?id=${encodeURIComponent(notif.resourceId)}`
+        : `/frontend/pages/pdf-study/index.html?id=${encodeURIComponent(notif.resourceId)}`;
+      window.location.href = targetUrl;
+    }
+  }
+
   function renderList() {
     const listContainer = document.getElementById("sr-notif-list");
     if (!listContainer) return;
+
+    if (isLoading && notifications.length === 0) {
+      listContainer.innerHTML = `
+        <div style="padding: 36px 20px; text-align: center; color: #64748b;">
+          <div style="font-size: 24px; margin-bottom: 8px;">⏳</div>
+          <p style="font-size: 13px; font-weight: 500; margin: 0; color: #64748b;">Loading notifications...</p>
+        </div>
+      `;
+      return;
+    }
 
     if (!notifications || notifications.length === 0) {
       listContainer.innerHTML = `
@@ -169,35 +200,62 @@
 
     listContainer.innerHTML = notifications.map((n) => {
       const isUnread = !n.isRead;
-      const bg = isUnread ? "#f8faff" : "#ffffff";
+      const bg = isUnread ? "#f0f7ff" : "#ffffff";
       const icon = getNotificationIcon(n.type);
+      const titleWeight = isUnread ? "700" : "600";
+      const titleColor = isUnread ? "#0f172a" : "#334155";
+      const textColor = isUnread ? "#1e293b" : "#64748b";
 
       return `
-        <div class="sr-notif-item" data-id="${n.id}" style="display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #f1f5f9; background: ${bg}; cursor: pointer; transition: background 0.15s ease; position: relative;">
-          <div style="font-size: 20px; flex-shrink: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: #eff6ff; border-radius: 8px;">
+        <div class="sr-notif-item" data-id="${n.id}" tabindex="0" role="button" aria-label="${escapeHTML(n.title)}" style="display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #f1f5f9; background: ${bg}; cursor: pointer; transition: background 0.15s ease; position: relative; outline: none;">
+          <div style="font-size: 20px; flex-shrink: 0; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; background: ${isUnread ? '#dbeafe' : '#f1f5f9'}; border-radius: 8px;">
             ${icon}
           </div>
           <div style="flex: 1; min-width: 0;">
-            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 2px;">
-              <strong style="font-size: 13px; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHTML(n.title)}</strong>
+            <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 3px;">
+              <strong style="font-size: 13px; font-weight: ${titleWeight}; color: ${titleColor}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHTML(n.title)}</strong>
               <span style="font-size: 11px; color: #94a3b8; flex-shrink: 0;">${timeAgo(n.createdAt)}</span>
             </div>
-            <p style="font-size: 12px; color: #475569; margin: 0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHTML(n.message)}</p>
-            ${n.classroomName ? `<span style="display: inline-block; font-size: 10px; color: #2563eb; font-weight: 600; margin-top: 4px; background: #eff6ff; padding: 1px 6px; border-radius: 4px;">🏛 ${escapeHTML(n.classroomName)}</span>` : ""}
+            <p style="font-size: 12px; color: ${textColor}; margin: 0; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHTML(n.message)}</p>
+            <div style="display: flex; align-items: center; gap: 6px; margin-top: 5px;">
+              ${n.classroomName ? `<span style="display: inline-block; font-size: 10px; color: #2563eb; font-weight: 600; background: #eff6ff; padding: 2px 7px; border-radius: 4px;">🏛 ${escapeHTML(n.classroomName)}</span>` : ""}
+              ${n.resourceId ? `<span style="font-size: 10px; color: #64748b;">Click to view ↗</span>` : ""}
+            </div>
           </div>
           ${isUnread ? `<span style="width: 8px; height: 8px; background: #2563eb; border-radius: 50%; position: absolute; right: 12px; top: 16px;"></span>` : ""}
         </div>
       `;
     }).join("");
 
-    // Wire individual clicks
+    // Wire individual item clicks and keyboard activation
     listContainer.querySelectorAll(".sr-notif-item").forEach((el) => {
-      el.addEventListener("click", async () => {
+      const handleAction = async () => {
         const id = el.getAttribute("data-id");
         const notif = notifications.find((item) => String(item.id) === String(id));
-        if (notif && !notif.isRead) {
-          await markOneAsRead(id);
+        if (notif) {
+          if (!notif.isRead) {
+            await markOneAsRead(id);
+          }
+          openNotificationTarget(notif);
         }
+      };
+
+      el.addEventListener("click", handleAction);
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleAction();
+        }
+      });
+
+      // Hover feedback
+      el.addEventListener("mouseenter", () => {
+        el.style.background = "#f8fafc";
+      });
+      el.addEventListener("mouseleave", () => {
+        const id = el.getAttribute("data-id");
+        const notif = notifications.find((item) => String(item.id) === String(id));
+        el.style.background = notif && !notif.isRead ? "#f0f7ff" : "#ffffff";
       });
     });
   }
@@ -207,18 +265,23 @@
       const res = await fetch(`${API_BASE_URL}/api/notifications`, {
         credentials: "include"
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        isLoading = false;
+        return;
+      }
 
       const data = await res.json();
       if (data.success) {
         notifications = data.notifications || [];
-        unreadCount = data.unreadCount || 0;
+        unreadCount = typeof data.unreadCount === "number" ? data.unreadCount : 0;
+        isLoading = false;
         updateBadge();
         if (isOpen) {
           renderList();
         }
       }
     } catch (_) {
+      isLoading = false;
       // Keep existing state on transient network blip
     }
   }
@@ -325,8 +388,15 @@
     // Fetch initial notifications
     fetchNotifications();
 
-    // Auto-poll every 30 seconds
-    setInterval(fetchNotifications, 30000);
+    // Auto-poll every 30 seconds with automatic cleanup
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(fetchNotifications, 30000);
+    window.addEventListener("beforeunload", () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    });
   }
 
   if (document.readyState === "loading") {
@@ -337,6 +407,9 @@
 
   window.StudyReaderNotifications = {
     fetch: fetchNotifications,
-    markAllRead: markAllAsRead
+    markAllRead: markAllAsRead,
+    markOneRead: markOneAsRead,
+    getNotifications: () => [...notifications],
+    getUnreadCount: () => unreadCount
   };
 })();

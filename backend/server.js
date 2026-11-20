@@ -1046,6 +1046,39 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
       });
 
     }
+
+    // ----------------------------------------------------------
+    // CLASSROOM AUTHORIZATION CHECK
+    // ----------------------------------------------------------
+    if (classroomId) {
+      const userRes = await pool.query(
+        "SELECT id, role, is_active FROM users WHERE id = $1 LIMIT 1",
+        [userId]
+      );
+      const user = userRes.rows[0];
+      if (!user) {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(401).json({ success: false, message: "User not found." });
+      }
+
+      const classRes = await pool.query(
+        "SELECT id, name, teacher_id, is_archived FROM classrooms WHERE id = $1 LIMIT 1",
+        [classroomId]
+      );
+      if (classRes.rows.length === 0 || classRes.rows[0].is_archived) {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(404).json({ success: false, message: "Classroom not found or archived." });
+      }
+
+      const classroom = classRes.rows[0];
+      if (classroom.teacher_id !== userId && user.role !== "admin") {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(403).json({
+          success: false,
+          message: "You do not have permission to manage this classroom."
+        });
+      }
+    }
     // ----------------------------------------------------------
     // CHECK WHETHER SAME FILENAME ALREADY EXISTS
     // FOR THIS USER ONLY
@@ -1237,14 +1270,17 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
 
       // Notify enrolled students if uploaded to a classroom
       if (classroomId) {
-        notifyClassroomStudents(
-          Number(classroomId),
-          `New ${category === 'pyq' ? 'PYQ' : 'Material'} Available`,
-          `"${pdf.original_filename}" was uploaded to your classroom materials.`,
-          "material_added"
-        ).catch((notifErr) => {
+        try {
+          await notifyClassroomStudents({
+            classroomId: Number(classroomId),
+            resourceId: pdf.id,
+            resourceTitle: pdf.original_filename,
+            teacherId: userId,
+            type: "resource_uploaded"
+          });
+        } catch (notifErr) {
           console.warn("[Upload] Could not broadcast student notifications:", notifErr.message);
-        });
+        }
       }
 
       // In serverless environments, attempt immediate processing within bounded budget
@@ -1509,14 +1545,17 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
 
       // Notify enrolled students if uploaded to a classroom
       if (classroomId) {
-        notifyClassroomStudents(
-          Number(classroomId),
-          `New ${category === 'pyq' ? 'PYQ' : 'Material'} Available`,
-          `"${pdf.original_filename}" was uploaded to your classroom materials.`,
-          "material_added"
-        ).catch((notifErr) => {
+        try {
+          await notifyClassroomStudents({
+            classroomId: Number(classroomId),
+            resourceId: pdf.id,
+            resourceTitle: pdf.original_filename,
+            teacherId: userId,
+            type: "resource_uploaded"
+          });
+        } catch (notifErr) {
           console.warn("[Upload] Could not broadcast student notifications:", notifErr.message);
-        });
+        }
       }
 
       // In serverless environments, attempt immediate processing within bounded budget
@@ -1755,6 +1794,21 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
         filename: pdf.original_filename,
         fileSize: pdf.file_size
       });
+
+      // Notify enrolled students if part of a classroom
+      if (pendingUpload.classroomId) {
+        try {
+          await notifyClassroomStudents({
+            classroomId: Number(pendingUpload.classroomId),
+            resourceId: pdf.id,
+            resourceTitle: pdf.original_filename,
+            teacherId: userId,
+            type: "resource_updated"
+          });
+        } catch (notifErr) {
+          console.warn("[Replace] Could not broadcast student notifications:", notifErr.message);
+        }
+      }
     } catch (jobErr) {
       console.warn("Could not enqueue document processing job:", jobErr.message);
     }
@@ -4900,16 +4954,21 @@ app.get("/api/admin/logs", requireAuth, requireRole(["admin"]), async (req, res)
 // NOTIFICATIONS SYSTEM (PostgreSQL primary + optional Firestore)
 // ============================================================
 
-async function createNotification(userId, classroomId, title, message, type = "announcement") {
+async function createNotification(userId, classroomId, title, message, type = "resource_uploaded", resourceId = null) {
   try {
     const res = await pool.query(
-      `INSERT INTO notifications (user_id, classroom_id, title, message, type, is_read, created_at)
-       VALUES ($1, $2, $3, $4, $5, FALSE, CURRENT_TIMESTAMP)
-       RETURNING id, user_id, classroom_id, title, message, type, is_read, created_at`,
-      [userId, classroomId || null, title, message, type]
+      `INSERT INTO notifications (user_id, classroom_id, resource_id, title, message, type, is_read, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, FALSE, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id, resource_id, type) WHERE resource_id IS NOT NULL DO NOTHING
+       RETURNING id, user_id, classroom_id, resource_id, title, message, type, is_read, created_at, read_at`,
+      [userId, classroomId || null, resourceId || null, title, message, type]
     );
 
     const notif = res.rows[0];
+    if (!notif) {
+      // Row already exists (idempotency enforced by unique index)
+      return null;
+    }
 
     // Optional realtime mirror to Firestore if initialized
     try {
@@ -4919,6 +4978,7 @@ async function createNotification(userId, classroomId, title, message, type = "a
         await firestore.collection("users").doc(String(userId)).collection("notifications").doc(String(notif.id)).set({
           id: notif.id,
           classroomId: notif.classroom_id,
+          resourceId: notif.resource_id,
           title: notif.title,
           message: notif.message,
           type: notif.type,
@@ -4935,14 +4995,69 @@ async function createNotification(userId, classroomId, title, message, type = "a
   }
 }
 
-async function notifyClassroomStudents(classroomId, title, message, type = "material_added") {
+async function notifyClassroomStudents(optionsOrClassroomId, titleArg, messageArg, typeArg) {
   try {
-    const members = await pool.query(
-      "SELECT student_id FROM classroom_members WHERE classroom_id = $1",
+    let classroomId, resourceId, resourceTitle, teacherId, type;
+
+    if (typeof optionsOrClassroomId === "object" && optionsOrClassroomId !== null) {
+      classroomId = optionsOrClassroomId.classroomId;
+      resourceId = optionsOrClassroomId.resourceId;
+      resourceTitle = optionsOrClassroomId.resourceTitle;
+      teacherId = optionsOrClassroomId.teacherId;
+      type = optionsOrClassroomId.type || "resource_uploaded";
+    } else {
+      classroomId = optionsOrClassroomId;
+      resourceId = null;
+      resourceTitle = null;
+      teacherId = null;
+      type = typeArg || "resource_uploaded";
+    }
+
+    if (!classroomId) {
+      console.warn("[Notifications] Missing classroomId for student broadcast.");
+      return;
+    }
+
+    // Retrieve classroom name and owner teacher
+    const classRes = await pool.query(
+      "SELECT id, name, teacher_id FROM classrooms WHERE id = $1",
       [classroomId]
     );
+    if (classRes.rows.length === 0) {
+      console.warn(`[Notifications] Classroom ${classroomId} not found for notification.`);
+      return;
+    }
+
+    const classroom = classRes.rows[0];
+    const classroomName = classroom.name || "Classroom";
+    const excludeUserId = teacherId || classroom.teacher_id;
+
+    // Retrieve enrolled students excluding the uploader/teacher
+    const members = await pool.query(
+      `SELECT student_id 
+       FROM classroom_members 
+       WHERE classroom_id = $1 AND student_id != $2`,
+      [classroomId, excludeUserId]
+    );
+
+    if (members.rows.length === 0) {
+      return;
+    }
+
+    const title = titleArg || "New Study Material Added";
+    const message = resourceTitle 
+      ? `Your teacher uploaded ${resourceTitle} in ${classroomName}.`
+      : (messageArg || `New material was uploaded to ${classroomName}.`);
+
     for (const row of members.rows) {
-      await createNotification(row.student_id, classroomId, title, message, type);
+      await createNotification(
+        row.student_id,
+        classroomId,
+        title,
+        message,
+        type,
+        resourceId
+      );
     }
   } catch (err) {
     console.error("[Notifications] Failed to notify classroom students:", err.message);
@@ -4954,10 +5069,12 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 30, 100);
     const notificationsResult = await pool.query(
-      `SELECT n.id, n.user_id, n.classroom_id, n.title, n.message, n.type, n.is_read, n.created_at,
-              c.name as classroom_name
+      `SELECT n.id, n.user_id, n.classroom_id, n.resource_id, n.title, n.message, n.type, n.is_read, n.created_at, n.read_at,
+              c.name as classroom_name,
+              p.original_filename as resource_title
        FROM notifications n
        LEFT JOIN classrooms c ON n.classroom_id = c.id
+       LEFT JOIN pdfs p ON n.resource_id = p.id
        WHERE n.user_id = $1
        ORDER BY n.created_at DESC
        LIMIT $2`,
@@ -4977,13 +5094,18 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
       success: true,
       notifications: notificationsResult.rows.map((n) => ({
         id: n.id,
+        recipientUserId: n.user_id,
+        userId: n.user_id,
         classroomId: n.classroom_id,
         classroomName: n.classroom_name,
+        resourceId: n.resource_id,
+        resourceTitle: n.resource_title,
         title: n.title,
         message: n.message,
         type: n.type,
         isRead: n.is_read,
-        createdAt: n.created_at
+        createdAt: n.created_at,
+        readAt: n.read_at
       })),
       unreadCount
     });
@@ -4996,15 +5118,38 @@ app.get("/api/notifications", requireAuth, async (req, res) => {
   }
 });
 
-// 2. Mark Single Notification as Read
+// 2. Get Unread Notifications Count
+app.get("/api/notifications/unread-count", requireAuth, async (req, res) => {
+  try {
+    const unreadResult = await pool.query(
+      `SELECT COUNT(*)::int as unread_count
+       FROM notifications
+       WHERE user_id = $1 AND is_read = FALSE`,
+      [req.user.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      unreadCount: unreadResult.rows[0]?.unread_count || 0
+    });
+  } catch (error) {
+    console.error("Get unread count error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve unread notification count."
+    });
+  }
+});
+
+// 3. Mark Single Notification as Read
 app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
   try {
     const notifId = req.params.id;
     const result = await pool.query(
       `UPDATE notifications
-       SET is_read = TRUE
+       SET is_read = TRUE, read_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND user_id = $2
-       RETURNING id, is_read`,
+       RETURNING id, is_read, read_at`,
       [notifId, req.user.id]
     );
 
@@ -5017,7 +5162,12 @@ app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Notification marked as read."
+      message: "Notification marked as read.",
+      notification: {
+        id: result.rows[0].id,
+        isRead: result.rows[0].is_read,
+        readAt: result.rows[0].read_at
+      }
     });
   } catch (error) {
     console.error("Mark notification read error:", error);
@@ -5028,19 +5178,21 @@ app.patch("/api/notifications/:id/read", requireAuth, async (req, res) => {
   }
 });
 
-// 3. Mark All Notifications as Read
+// 4. Mark All Notifications as Read
 app.post("/api/notifications/mark-all-read", requireAuth, async (req, res) => {
   try {
-    await pool.query(
+    const result = await pool.query(
       `UPDATE notifications
-       SET is_read = TRUE
-       WHERE user_id = $1 AND is_read = FALSE`,
+       SET is_read = TRUE, read_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1 AND is_read = FALSE
+       RETURNING id`,
       [req.user.id]
     );
 
     return res.status(200).json({
       success: true,
-      message: "All notifications marked as read."
+      message: "All notifications marked as read.",
+      updatedCount: result.rowCount || 0
     });
   } catch (error) {
     console.error("Mark all notifications read error:", error);
