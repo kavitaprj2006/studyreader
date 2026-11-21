@@ -1028,8 +1028,15 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         req.file.originalname
       );
 
-    const subjectId = req.body.subjectId || req.body.subject_id || null;
+    const rawSubjectId = req.body.subjectId || req.body.subject_id || null;
+    const isAutoDetect = rawSubjectId === "auto" || req.body.autoDetectSubject === "true" || !rawSubjectId;
+    const subjectId = (!isAutoDetect && rawSubjectId && !isNaN(Number(rawSubjectId))) ? Number(rawSubjectId) : null;
     let classroomId = req.body.classroomId || req.body.classroom_id || null;
+    if (classroomId && !isNaN(Number(classroomId))) {
+      classroomId = Number(classroomId);
+    } else {
+      classroomId = null;
+    }
 
     // If classroomId not explicitly provided, attempt to resolve from subject
     if (!classroomId && subjectId) {
@@ -1087,7 +1094,7 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
       }
 
       const classroom = classRes.rows[0];
-      if (classroom.teacher_id !== userId && user.role !== "admin") {
+      if (String(classroom.teacher_id) !== String(userId) && user.role !== "admin") {
         if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         return res.status(403).json({
           success: false,
@@ -1221,10 +1228,12 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
           storage_provider,
           storage_path,
           mime_type,
-          md5_hash
+          md5_hash,
+          classification_source,
+          classification_status
         )
       VALUES
-        ($1, $2, $3, 'pending', $4, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ($1, $2, $3, 'pending', $4, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'unclassified')
       RETURNING id
       `,
       [
@@ -1241,7 +1250,8 @@ app.post("/api/pdfs/upload", upload.single("pdf"), async (req, res) => {
         cloudUpload.storageProvider,
         cloudUpload.storagePath,
         cloudUpload.mimeType,
-        cloudUpload.md5Hash
+        cloudUpload.md5Hash,
+        subjectId ? "manual" : "unclassified"
       ]
     );
 
@@ -1498,7 +1508,7 @@ app.post("/api/pdfs/duplicate/keep-both", requireAuth, async (req, res) => {
           pendingUpload.originalFilename,
           pendingUpload.fileSize,
           pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
-          pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
+          (pendingUpload.subjectId && pendingUpload.subjectId !== 'auto' && !isNaN(Number(pendingUpload.subjectId))) ? Number(pendingUpload.subjectId) : null,
           pendingUpload.category || 'resource',
           pendingUpload.academicYear || null,
           pendingUpload.semester || null,
@@ -1753,7 +1763,7 @@ app.post("/api/pdfs/duplicate/replace", requireAuth, async (req, res) => {
           `/api/pdfs/${existingPdfId}/file`,
           pendingUpload.fileSize,
           pendingUpload.classroomId ? Number(pendingUpload.classroomId) : null,
-          pendingUpload.subjectId ? Number(pendingUpload.subjectId) : null,
+          (pendingUpload.subjectId && pendingUpload.subjectId !== 'auto' && !isNaN(Number(pendingUpload.subjectId))) ? Number(pendingUpload.subjectId) : null,
           pendingUpload.category || 'resource',
           pendingUpload.academicYear || null,
           pendingUpload.semester || null,
@@ -5728,6 +5738,17 @@ process.on("beforeExit", (code) => {
 
 process.on("exit", (code) => {
   console.log("PROCESS EXIT TRIGGERED, CODE:", code);
+});
+
+// Multer and general client input error handler
+app.use((err, req, res, next) => {
+  if (err && (err.message?.includes("Only PDF, DOCX and PPTX files are allowed") || err.name === "MulterError")) {
+    return res.status(400).json({
+      success: false,
+      message: err.message || "Invalid or unsupported file format."
+    });
+  }
+  next(err);
 });
 
 startServer();

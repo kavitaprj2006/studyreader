@@ -358,9 +358,17 @@ function populateClassroomSelects() {
 
 async function loadSubjectsForUpload(classroomId) {
   const subjectSel = document.getElementById("select-upload-subject");
-  if (!subjectSel || !classroomId) return;
+  const hintEl = document.getElementById("upload-subject-hint");
+  if (!subjectSel) return;
 
-  subjectSel.innerHTML = "<option>Loading subjects...</option>";
+  if (!classroomId) {
+    subjectSel.innerHTML = "<option value=''>Select classroom first...</option>";
+    if (hintEl) hintEl.innerHTML = "";
+    return;
+  }
+
+  subjectSel.innerHTML = "<option value='auto'>Loading subjects...</option>";
+  if (hintEl) hintEl.innerHTML = "";
 
   try {
     const res = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}`, {
@@ -372,17 +380,30 @@ async function loadSubjectsForUpload(classroomId) {
     const subjects = data.subjects || [];
 
     if (subjects.length === 0) {
-      subjectSel.innerHTML = "<option value=''>Auto-Detect Subject with ML (No manual subjects yet)</option>";
+      subjectSel.innerHTML = "<option value='auto' selected>⚡ Auto-Detect Subject with ML (Recommended)</option>";
+      if (hintEl) {
+        hintEl.innerHTML = "<span style='color: #0284c7;'>ℹ️ No manual subjects created in this classroom yet. The document will be classified automatically using Machine Learning upon upload.</span>";
+      }
       return;
     }
 
-    subjectSel.innerHTML = `<option value=''>⚡ Auto-Detect Subject with ML (Recommended)</option>` +
+    subjectSel.innerHTML =
+      `<option value='auto' selected>⚡ Auto-Detect Subject with ML (Recommended)</option>` +
+      `<optgroup label="Classroom Subjects">` +
       subjects.map((s) =>
         `<option value="${s.id}">${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`
-      ).join("");
+      ).join("") +
+      `</optgroup>`;
+
+    if (hintEl) {
+      hintEl.innerHTML = "<span style='color: #059669;'>💡 Keep Auto-Detect to classify with ML, or choose an existing classroom subject above.</span>";
+    }
   } catch (err) {
     console.error("Error loading subjects for upload:", err);
-    subjectSel.innerHTML = "<option value=''>Failed to load subjects</option>";
+    subjectSel.innerHTML = "<option value='auto' selected>⚡ Auto-Detect Subject with ML (Recommended)</option>";
+    if (hintEl) {
+      hintEl.innerHTML = "<span style='color: #0284c7;'>ℹ️ Auto-Detect with ML will classify this document upon upload.</span>";
+    }
   }
 }
 
@@ -597,7 +618,12 @@ if (uploadResourceForm) {
     const formData = new FormData();
     formData.append("pdf", file);
     if (classroomId) formData.append("classroomId", classroomId);
-    if (subjectId) formData.append("subjectId", subjectId);
+    if (subjectId && subjectId !== "auto") {
+      formData.append("subjectId", subjectId);
+      formData.append("autoDetectSubject", "false");
+    } else {
+      formData.append("autoDetectSubject", "true");
+    }
     if (category) formData.append("category", category);
     if (academicYear) formData.append("academicYear", academicYear);
 
@@ -804,7 +830,7 @@ const uploadResourceButtons = document.querySelectorAll(
 uploadResourceButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     if (teacherClassrooms.length === 0) {
-      showToast("Please create a classroom and add a subject first before publishing materials.");
+      showToast("Please create a classroom first before publishing materials.");
       openModal("modal-create-classroom");
       return;
     }
@@ -813,6 +839,10 @@ uploadResourceButtons.forEach((btn) => {
       catSelect.value = "pyq";
     } else if (catSelect) {
       catSelect.value = "resource";
+    }
+    const uploadClassSel = document.getElementById("select-upload-classroom");
+    if (uploadClassSel && uploadClassSel.value) {
+      loadSubjectsForUpload(uploadClassSel.value);
     }
     openModal("modal-upload-resource");
   });

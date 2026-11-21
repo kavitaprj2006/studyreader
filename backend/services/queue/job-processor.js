@@ -224,7 +224,7 @@ class JobProcessor {
 
       // 1. Fetch document record
       const pdfRes = await this.pool.query(
-        `SELECT id, original_filename, file_url, storage_path, storage_provider, classroom_id
+        `SELECT id, user_id, original_filename, file_url, storage_path, storage_provider, classroom_id, subject_id, classification_source
          FROM pdfs WHERE id = $1`,
         [pdfId]
       );
@@ -246,30 +246,52 @@ class JobProcessor {
 
       // 3b. Smart Academic Subject Classification (ML Module - Non-blocking & Isolated)
       try {
-        let subjectsRes = await this.pool.query(`
-          SELECT DISTINCT s.id, s.name, s.code
-          FROM subjects s
-          LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
-          LEFT JOIN classroom_members cm ON cs.classroom_id = cm.classroom_id
-          LEFT JOIN student_subjects ss ON s.id = ss.subject_id AND ss.is_archived = FALSE
-          WHERE ($1::bigint IS NOT NULL AND cs.classroom_id = $1)
-             OR cm.student_id = $2
-             OR ss.student_id = $2
-             OR s.created_by = $2
-        `, [pdf.classroom_id || null, pdf.user_id]);
-
-        let availableSubjects = subjectsRes.rows || [];
-        if (availableSubjects.length === 0) {
-          const fallbackRes = await this.pool.query(`
-            SELECT id, name, code FROM subjects WHERE is_active = TRUE
-          `);
-          availableSubjects = fallbackRes.rows || [];
+        let availableSubjects = [];
+        if (pdf.classroom_id) {
+          // Strictly restrict classroom auto-matching to subjects that belong to this classroom
+          const csRes = await this.pool.query(`
+            SELECT DISTINCT s.id, s.name, s.code
+            FROM classroom_subjects cs
+            JOIN subjects s ON cs.subject_id = s.id
+            WHERE cs.classroom_id = $1 AND cs.is_archived = FALSE
+          `, [pdf.classroom_id]);
+          availableSubjects = csRes.rows || [];
+        } else {
+          // Personal / private library subjects
+          const personalRes = await this.pool.query(`
+            SELECT DISTINCT s.id, s.name, s.code
+            FROM subjects s
+            LEFT JOIN student_subjects ss ON s.id = ss.subject_id AND ss.is_archived = FALSE
+            WHERE ss.student_id = $1 OR s.created_by = $1
+          `, [pdf.user_id]);
+          availableSubjects = personalRes.rows || [];
+          if (availableSubjects.length === 0) {
+            const fallbackRes = await this.pool.query(`
+              SELECT id, name, code FROM subjects WHERE is_active = TRUE
+            `);
+            availableSubjects = fallbackRes.rows || [];
+          }
         }
 
         const mlResult = subjectClassifier.classifyDocument(extracted.fullText || "", availableSubjects);
 
+        // Resolve canonical catalog subject for tracking prediction
+        let predictedCatalogSubjectId = mlResult.matchedSubjectId || null;
+        if (!predictedCatalogSubjectId && mlResult.predictedSubject) {
+          try {
+            const catRes = await this.pool.query(
+              `SELECT id FROM subjects WHERE LOWER(name) = LOWER($1) AND is_active = TRUE LIMIT 1`,
+              [mlResult.predictedSubject]
+            );
+            if (catRes.rows.length > 0) {
+              predictedCatalogSubjectId = catRes.rows[0].id;
+            }
+          } catch (_) {}
+        }
+
         console.log(`[JobProcessor] ML Classification for PDF #${pdfId}:`, {
           predicted: mlResult.predictedSubject,
+          predictedCatalogId: predictedCatalogSubjectId,
           matchedId: mlResult.matchedSubjectId,
           confidence: mlResult.confidence,
           status: mlResult.status
@@ -281,20 +303,20 @@ class JobProcessor {
             UPDATE pdfs
             SET predicted_subject_id = $1,
                 prediction_confidence = $2,
-                classification_status = $3,
-                classification_model_version = $4,
+                classification_status = 'classified',
+                classification_model_version = $3,
                 classified_at = NOW(),
-                classification_source = COALESCE(classification_source, 'manual')
-            WHERE id = $5
+                classification_source = 'manual',
+                manually_selected_subject_id = COALESCE(manually_selected_subject_id, subject_id)
+            WHERE id = $4
           `, [
-            mlResult.matchedSubjectId || null,
+            predictedCatalogSubjectId,
             mlResult.confidence,
-            mlResult.status,
             mlResult.modelVersion,
             pdfId
           ]);
         } else if (mlResult.matchedSubjectId && mlResult.status === 'classified') {
-          // Auto-assign matching catalog subject
+          // Auto-assign matching classroom/catalog subject
           await this.pool.query(`
             UPDATE pdfs
             SET subject_id = $1,
@@ -312,7 +334,7 @@ class JobProcessor {
             pdfId
           ]);
         } else {
-          // Needs review or unclassified
+          // Needs review or unclassified: do NOT assign arbitrary subject
           await this.pool.query(`
             UPDATE pdfs
             SET predicted_subject_id = $1,
@@ -323,7 +345,7 @@ class JobProcessor {
                 classification_source = 'unclassified'
             WHERE id = $5
           `, [
-            mlResult.matchedSubjectId || null,
+            predictedCatalogSubjectId,
             mlResult.confidence,
             mlResult.status,
             mlResult.modelVersion,
