@@ -120,6 +120,7 @@ async function initLibrary() {
   connectCategoryTabs();
   connectSearch();
   connectUploadForm();
+  connectChangeSubjectForm();
 }
 
 async function loadMySubjects() {
@@ -470,7 +471,15 @@ function renderPDFCard(pdf) {
   const categoryLabel = isPyq ? `PYQ ${pdf.academicYear ? `(${escapeHTML(pdf.academicYear)})` : ""}` : "Resource";
   const pages = pdf.pageCount ? `${pdf.pageCount} pages` : "Pages n/a";
 
-  const subjectBadge = pdf.subjectName ? `<span>▣ ${escapeHTML(pdf.subjectName)}</span>` : "";
+  let subjectBadge = "";
+  if (pdf.subjectName) {
+    const isAuto = pdf.classificationSource === "ml_auto";
+    const confText = isAuto && pdf.predictionConfidence ? ` <small style="opacity:0.8; font-size:10px;">(${Math.round(pdf.predictionConfidence * 100)}%)</small>` : "";
+    subjectBadge = `<span class="tag-subject" title="${isAuto ? 'Auto-classified by Machine Learning' : 'Academic Subject'}">▣ ${escapeHTML(pdf.subjectName)}${confText}</span>`;
+  } else if (pdf.classificationStatus === "needs_review") {
+    subjectBadge = `<span class="tag-subject needs-review" style="background:#fef3c7; color:#92400e; border:1px dashed #f59e0b; padding:1px 6px; border-radius:4px; font-size:11px;" title="ML detected subject needs review">⚡ Needs Review</span>`;
+  }
+
   const classroomBadge = pdf.classroomName ? `<span>🏛 ${escapeHTML(pdf.classroomName)}</span>` : "";
   const uploaderText = pdf.uploadedBy && !pdf.uploadedBy.isMe ? `<span>By: ${escapeHTML(pdf.uploadedBy.name)}</span>` : "";
 
@@ -508,6 +517,9 @@ function renderPDFCard(pdf) {
           </button>
           <button type="button" class="pdf-menu-item" data-action="ask-ai" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
             <span>✦</span> <span>Study with AI</span>
+          </button>
+          <button type="button" class="pdf-menu-item" data-action="change-subject" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
+            <span>🏷</span> <span>Change Subject</span>
           </button>
           <hr style="border:0; border-top:1px solid var(--border); margin:4px 0;">
           <button type="button" class="pdf-menu-item delete-item" data-action="delete" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px; color:#dc2626;">
@@ -558,10 +570,92 @@ function connectPDFCardEvents() {
 
       if (action === "open" || action === "read-aloud" || action === "ask-ai") {
         openDocumentWorkspace(id);
+      } else if (action === "change-subject") {
+        openChangeSubjectModal(id);
       } else if (action === "delete") {
         deleteDocument(id);
       }
     });
+  });
+}
+
+function openChangeSubjectModal(pdfId) {
+  const pdf = allPDFs.find((p) => String(p.id) === String(pdfId));
+  if (!pdf) return;
+
+  const select = document.getElementById("select-change-subject");
+  const idInput = document.getElementById("change-subject-pdf-id");
+  const nameP = document.getElementById("change-subject-doc-name");
+
+  if (idInput) idInput.value = pdf.id;
+  if (nameP) nameP.textContent = `Document: ${pdf.originalFilename || pdf.filename}`;
+
+  if (select) {
+    select.innerHTML = '<option value="">Choose academic subject...</option>' +
+      mySubjects.map((s) => `
+        <option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>
+          ${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""} [${escapeHTML(s.classroomName || 'Personal')}]
+        </option>
+      `).join("");
+  }
+
+  openModal("modal-change-subject");
+}
+
+function connectChangeSubjectForm() {
+  const form = document.getElementById("form-change-subject");
+  if (!form) return;
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pdfId = document.getElementById("change-subject-pdf-id")?.value;
+    const subjectId = document.getElementById("select-change-subject")?.value;
+
+    if (!pdfId || !subjectId) {
+      alert("Please select a subject.");
+      return;
+    }
+
+    const submitBtn = document.getElementById("btn-submit-change-subject");
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Updating...";
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/pdfs/${pdfId}/subject`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ subjectId: Number(subjectId) })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.message || "Failed to update subject.");
+        return;
+      }
+
+      // Update in local state
+      const pdf = allPDFs.find((p) => String(p.id) === String(pdfId));
+      if (pdf && data.document) {
+        pdf.subjectId = data.document.subjectId;
+        pdf.subjectName = data.document.subjectName;
+        pdf.classificationSource = data.document.classificationSource;
+        pdf.classificationStatus = data.document.classificationStatus;
+      }
+
+      closeModal("modal-change-subject");
+      renderFilteredPDFs();
+    } catch (err) {
+      console.error("Change subject error:", err);
+      alert("Network error updating subject.");
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Save Subject";
+      }
+    }
   });
 }
 

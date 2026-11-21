@@ -263,6 +263,32 @@
 
   <!-- ================= MODALS ================= -->
 
+  <!-- Modal: Assign / Reclassify Subject -->
+  <dialog id="modal-change-subject" class="sr-modal">
+    <div class="modal-box" style="max-width: 440px;">
+      <div class="modal-head">
+        <h3>Change Document Subject</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-change-subject">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-change-subject">
+          <input type="hidden" id="change-subject-pdf-id">
+          <p id="change-subject-doc-name" style="font-size: 13px; font-weight: 600; margin-bottom: 14px; color: var(--text-secondary); word-break: break-all;"></p>
+          <div class="form-group">
+            <label for="select-change-subject">Target Academic Subject</label>
+            <select id="select-change-subject" required style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);">
+              <option value="">Choose subject...</option>
+            </select>
+          </div>
+          <div class="modal-actions" style="margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="button" class="btn-sm" data-close-modal="modal-change-subject">Cancel</button>
+            <button type="submit" id="btn-submit-change-subject" class="btn-sm primary">Save Subject</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Modal: Upload Material -->
   <dialog id="modal-library-upload" class="sr-modal">
     <div class="modal-box">

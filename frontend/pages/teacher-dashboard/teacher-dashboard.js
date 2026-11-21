@@ -372,13 +372,14 @@ async function loadSubjectsForUpload(classroomId) {
     const subjects = data.subjects || [];
 
     if (subjects.length === 0) {
-      subjectSel.innerHTML = "<option value=''>No subjects in this classroom yet (create one first)</option>";
+      subjectSel.innerHTML = "<option value=''>Auto-Detect Subject with ML (No manual subjects yet)</option>";
       return;
     }
 
-    subjectSel.innerHTML = subjects.map((s) =>
-      `<option value="${s.id}">${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`
-    ).join("");
+    subjectSel.innerHTML = `<option value=''>⚡ Auto-Detect Subject with ML (Recommended)</option>` +
+      subjects.map((s) =>
+        `<option value="${s.id}">${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`
+      ).join("");
   } catch (err) {
     console.error("Error loading subjects for upload:", err);
     subjectSel.innerHTML = "<option value=''>Failed to load subjects</option>";
@@ -542,6 +543,8 @@ if (addSubjectForm) {
     const name = document.getElementById("input-subject-name").value.trim();
     const code = document.getElementById("input-subject-code").value.trim();
     const description = document.getElementById("input-subject-desc").value.trim();
+    const educationalLevel = document.getElementById("select-subject-level")?.value || "general";
+    const courseOrGrade = document.getElementById("input-subject-grade")?.value.trim() || null;
 
     if (!classroomId || !name) return;
 
@@ -550,7 +553,7 @@ if (addSubjectForm) {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, code, description })
+        body: JSON.stringify({ name, code, description, educationalLevel, courseOrGrade })
       });
 
       const data = await res.json();

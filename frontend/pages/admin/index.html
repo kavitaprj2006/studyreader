@@ -293,6 +293,10 @@
           <span class="nav-icon">⚡</span>
           <span>Cache & Jobs</span>
         </a>
+        <a href="#ml" class="nav-item" data-tab="ml">
+          <span class="nav-icon">🧠</span>
+          <span>ML Classifier</span>
+        </a>
         <a href="#logs" class="nav-item" data-tab="logs">
           <span class="nav-icon">📜</span>
           <span>Audit Logs</span>
@@ -357,6 +361,7 @@
           <button class="admin-tab-btn" data-tab="academic">🏛 Classrooms &amp; Subjects</button>
           <button class="admin-tab-btn" data-tab="ai">🤖 AI Multi-Provider Matrix</button>
           <button class="admin-tab-btn" data-tab="cache">⚡ Cache &amp; Job Queue</button>
+          <button class="admin-tab-btn" data-tab="ml">🧠 ML Model Monitoring</button>
           <button class="admin-tab-btn" data-tab="logs">📜 Audit Logs</button>
         </div>
 
@@ -712,7 +717,243 @@
         </div>
 
         <!-- ========================================== -->
-        <!-- VIEW 6: AUDIT LOGS                        -->
+        <!-- VIEW 6: MACHINE LEARNING MODEL MONITORING  -->
+        <!-- ========================================== -->
+        <div id="view-ml" class="admin-view-panel">
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+
+            <!-- Header Card: Model Health & Status -->
+            <section class="dashboard-card">
+              <div class="card-header" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px;">
+                <div>
+                  <h2 style="display: flex; align-items: center; gap: 8px;">
+                    <span>🧠</span> Machine Learning — Model Monitoring
+                  </h2>
+                  <p>Supervised Academic Subject Classifier performance, held-out evaluation benchmarks, and live database telemetry</p>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span id="ml-model-status-badge" class="status-badge active" style="padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; background: #dcfce7; color: #166534;">
+                    ● Active & Serving
+                  </span>
+                  <span id="ml-model-version" style="padding: 4px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; background: #f1f5f9; color: #475569;">
+                    v1.0.0
+                  </span>
+                  <button type="button" class="btn-action-sm" onclick="loadMLMetrics()" style="padding: 6px 12px; font-size: 12px; cursor: pointer;">
+                    🔄 Refresh
+                  </button>
+                </div>
+              </div>
+
+              <!-- Top KPI Metrics Grid -->
+              <div class="stats-grid" style="margin-top: 16px;">
+                <article class="stat-card">
+                  <div class="stat-icon green">🎯</div>
+                  <div>
+                    <span class="stat-label">Classification Success Rate</span>
+                    <strong class="stat-value" id="ml-stat-success-rate">--%</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon blue">📚</div>
+                  <div>
+                    <span class="stat-label">Processed Documents</span>
+                    <strong class="stat-value" id="ml-stat-total-processed">0</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon orange">⚡</div>
+                  <div>
+                    <span class="stat-label">Needs Manual Review</span>
+                    <strong class="stat-value" id="ml-stat-needs-review">0</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon purple">🏷</div>
+                  <div>
+                    <span class="stat-label">Manually Corrected</span>
+                    <strong class="stat-value" id="ml-stat-corrected">0</strong>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <!-- Dual Columns: Model Overview & Evaluation Benchmark -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px;">
+              
+              <!-- Model Architecture & Metadata -->
+              <section class="dashboard-card">
+                <div class="card-header">
+                  <div>
+                    <h3>Model Architecture & Parameters</h3>
+                    <p>Algorithm, feature representation, and inference engine</p>
+                  </div>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Primary Model</span>
+                    <strong id="ml-model-name" style="font-size: 13px;">Logistic Regression</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Feature Extractor</span>
+                    <strong id="ml-feature-ext" style="font-size: 13px;">TF-IDF (1-2 ngrams)</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Subject Classes</span>
+                    <strong id="ml-classes-count" style="font-size: 13px;">15 Classes</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Confidence Threshold (&tau;)</span>
+                    <strong id="ml-conf-threshold" style="font-size: 13px;">35%</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Training Dataset</span>
+                    <strong id="ml-dataset-size" style="font-size: 13px;">750 samples</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Inference Latency</span>
+                    <strong style="color: #059669; font-size: 13px;">&lt; 2 ms (Pure JS Engine)</strong>
+                  </div>
+                  <div style="display: flex; justify-content: space-between;">
+                    <span style="color: var(--text-secondary); font-size: 13px;">Last Evaluation</span>
+                    <span id="ml-eval-timestamp" style="font-size: 12px; color: var(--text-secondary);">--</span>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Held-Out Test Evaluation Benchmark -->
+              <section class="dashboard-card">
+                <div class="card-header">
+                  <div>
+                    <h3>Model Evaluation Benchmark</h3>
+                    <p>Held-out test set evaluation metrics (N = 150 stratified samples)</p>
+                  </div>
+                </div>
+                <div style="overflow-x: auto;">
+                  <table class="admin-table" style="font-size: 13px;">
+                    <thead>
+                      <tr>
+                        <th>Metric</th>
+                        <th>Multinomial NB</th>
+                        <th>Logistic Regression (Active)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td><strong>Accuracy</strong></td>
+                        <td id="eval-nb-acc">--</td>
+                        <td><strong id="eval-lr-acc" style="color: #059669;">--</strong></td>
+                      </tr>
+                      <tr>
+                        <td><strong>Precision (Weighted)</strong></td>
+                        <td id="eval-nb-prec">--</td>
+                        <td><strong id="eval-lr-prec" style="color: #059669;">--</strong></td>
+                      </tr>
+                      <tr>
+                        <td><strong>Recall (Weighted)</strong></td>
+                        <td id="eval-nb-rec">--</td>
+                        <td><strong id="eval-lr-rec" style="color: #059669;">--</strong></td>
+                      </tr>
+                      <tr>
+                        <td><strong>F1-Score (Weighted)</strong></td>
+                        <td id="eval-nb-f1">--</td>
+                        <td><strong id="eval-lr-f1" style="color: #059669;">--</strong></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p style="font-size: 11px; color: var(--text-secondary); margin-top: 12px; font-style: italic;">
+                  * Note: Reported scores represent rigorous held-out test evaluation benchmarks, distinct from real-time production classification volume.
+                </p>
+              </section>
+            </div>
+
+            <!-- Subject-Level Performance Breakdown -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h3>Per-Subject Classification Performance</h3>
+                  <p>Detailed Precision, Recall, and F1-Scores across all 15 academic subjects</p>
+                </div>
+              </div>
+              <div style="overflow-x: auto; max-height: 420px;">
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Academic Subject</th>
+                      <th>Level</th>
+                      <th>Precision</th>
+                      <th>Recall</th>
+                      <th>F1-Score</th>
+                      <th>Test Samples</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ml-subject-table-body">
+                    <tr>
+                      <td colspan="6" style="text-align: center; color: var(--text-secondary); padding: 20px;">Loading subject metrics...</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <!-- Confusion Matrix Card -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h3>Evaluation Confusion Matrix</h3>
+                  <p>15 &times; 15 test-set prediction matrix highlighting diagonal classification fidelity</p>
+                </div>
+              </div>
+              <div id="ml-cm-container" style="padding: 10px 0;">
+                <div style="text-align: center; color: var(--text-secondary); padding: 24px;">Loading confusion matrix...</div>
+              </div>
+            </section>
+
+            <!-- Operational Activity & Telemetry -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h3>Live Operational Telemetry</h3>
+                  <p>Real-time document classification status from Neon PostgreSQL</p>
+                </div>
+              </div>
+              <div class="stats-grid">
+                <article class="stat-card">
+                  <div class="stat-icon blue">📄</div>
+                  <div>
+                    <span class="stat-label">Total Documents in DB</span>
+                    <strong class="stat-value" id="ml-stat-total-docs">0</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon green">🤖</div>
+                  <div>
+                    <span class="stat-label">Auto-Classified (ML)</span>
+                    <strong class="stat-value" id="ml-stat-auto-count">0</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon orange">📊</div>
+                  <div>
+                    <span class="stat-label">Average Confidence</span>
+                    <strong class="stat-value" id="ml-stat-avg-conf">--%</strong>
+                  </div>
+                </article>
+                <article class="stat-card">
+                  <div class="stat-icon purple">⏱</div>
+                  <div>
+                    <span class="stat-label">Pending Document Jobs</span>
+                    <strong class="stat-value" id="ml-stat-pending-jobs">0</strong>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+          </div>
+        </div>
+
+        <!-- ========================================== -->
+        <!-- VIEW 7: AUDIT LOGS                        -->
         <!-- ========================================== -->
         <div id="view-logs" class="admin-view-panel">
           <section class="dashboard-card">
@@ -840,7 +1081,7 @@
 
     function handleHashRouting() {
       const hash = (window.location.hash || "").replace("#", "");
-      if (["overview", "users", "academic", "ai", "cache", "logs"].includes(hash)) {
+      if (["overview", "users", "academic", "ai", "cache", "ml", "logs"].includes(hash)) {
         switchTab(hash);
       } else {
         switchTab("overview");
@@ -871,6 +1112,7 @@
       else if (tabId === "academic") loadAcademic();
       else if (tabId === "ai") loadAiStatus();
       else if (tabId === "cache") loadCacheAndJobs();
+      else if (tabId === "ml") loadMLMetrics();
       else if (tabId === "logs") loadLogs();
     }
 
@@ -1226,7 +1468,132 @@
       }
     }
 
-    // 6. Audit Logs
+    // 6. Machine Learning Classifier Model Monitoring
+    async function loadMLMetrics() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/ml/metrics`, { credentials: "include" });
+        if (!res.ok) {
+          console.error("Failed to fetch ML metrics");
+          return;
+        }
+        const data = await res.json();
+        const model = data.model || {};
+        const evalData = data.evaluation || {};
+        const ops = data.operations || {};
+
+        // 1. Model Overview & Header Status
+        document.getElementById("ml-model-name").textContent = model.name || "Logistic Regression";
+        document.getElementById("ml-model-version").textContent = `v${model.version || "1.0.0"}`;
+        const badge = document.getElementById("ml-model-status-badge");
+        if (badge) {
+          badge.textContent = model.status === "Active" ? "● Active & Serving" : "● Unavailable";
+          badge.className = model.status === "Active" ? "status-badge active" : "status-badge inactive";
+          badge.style.background = model.status === "Active" ? "#dcfce7" : "#fee2e2";
+          badge.style.color = model.status === "Active" ? "#166534" : "#991b1b";
+        }
+
+        document.getElementById("ml-feature-ext").textContent = model.featureExtraction || "TF-IDF (1-2 ngrams)";
+        document.getElementById("ml-classes-count").textContent = `${model.classesCount || 15} Classes`;
+        document.getElementById("ml-dataset-size").textContent = evalData.dataset_size ? `${evalData.dataset_size} samples` : "750 samples";
+        document.getElementById("ml-eval-timestamp").textContent = evalData.evaluated_at ? new Date(evalData.evaluated_at).toLocaleString() : "N/A";
+        document.getElementById("ml-conf-threshold").textContent = model.confidenceThreshold ? `${Math.round(model.confidenceThreshold * 100)}%` : "35%";
+
+        // 2. Operational Statistics KPI Cards
+        document.getElementById("ml-stat-total-processed").textContent = ops.totalProcessed ?? 0;
+        document.getElementById("ml-stat-needs-review").textContent = ops.needsReviewCount ?? 0;
+        document.getElementById("ml-stat-corrected").textContent = ops.manuallyCorrectedCount ?? 0;
+        document.getElementById("ml-stat-success-rate").textContent = ops.successRate !== null ? `${ops.successRate}%` : "N/A";
+        document.getElementById("ml-stat-total-docs").textContent = ops.totalDocuments ?? 0;
+        document.getElementById("ml-stat-auto-count").textContent = ops.mlAutoCount ?? 0;
+        document.getElementById("ml-stat-avg-conf").textContent = ops.averageConfidence !== null ? `${(ops.averageConfidence * 100).toFixed(1)}%` : "N/A";
+        document.getElementById("ml-stat-pending-jobs").textContent = ops.pendingJobs ?? 0;
+
+        // 3. Evaluation Comparison Table (Multinomial Naive Bayes vs Logistic Regression)
+        const comp = evalData.models_comparison || {};
+        const lr = comp.logistic_regression || {};
+        const nb = comp.multinomial_naive_bayes || {};
+
+        document.getElementById("eval-lr-acc").textContent = lr.accuracy !== undefined ? `${(lr.accuracy * 100).toFixed(2)}%` : "N/A";
+        document.getElementById("eval-lr-prec").textContent = lr.precision !== undefined ? lr.precision.toFixed(4) : "N/A";
+        document.getElementById("eval-lr-rec").textContent = lr.recall !== undefined ? lr.recall.toFixed(4) : "N/A";
+        document.getElementById("eval-lr-f1").textContent = lr.f1_score !== undefined ? lr.f1_score.toFixed(4) : "N/A";
+
+        document.getElementById("eval-nb-acc").textContent = nb.accuracy !== undefined ? `${(nb.accuracy * 100).toFixed(2)}%` : "N/A";
+        document.getElementById("eval-nb-prec").textContent = nb.precision !== undefined ? nb.precision.toFixed(4) : "N/A";
+        document.getElementById("eval-nb-rec").textContent = nb.recall !== undefined ? nb.recall.toFixed(4) : "N/A";
+        document.getElementById("eval-nb-f1").textContent = nb.f1_score !== undefined ? nb.f1_score.toFixed(4) : "N/A";
+
+        // 4. Per-Subject Performance Table
+        const perSubject = evalData.per_subject || {};
+        const subjectTbody = document.getElementById("ml-subject-table-body");
+        if (subjectTbody) {
+          const rows = Object.entries(perSubject).map(([sub, metrics]) => `
+            <tr>
+              <td><strong>${escapeHTML(sub)}</strong></td>
+              <td><span style="display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; background:#f1f5f9; color:#475569;">${getSubjectLevel(sub)}</span></td>
+              <td>${(metrics.precision * 100).toFixed(1)}%</td>
+              <td>${(metrics.recall * 100).toFixed(1)}%</td>
+              <td><strong style="color:#059669;">${(metrics.f1_score * 100).toFixed(1)}%</strong></td>
+              <td>${metrics.support}</td>
+            </tr>
+          `).join("");
+          subjectTbody.innerHTML = rows || `<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--text-secondary);">No evaluation data available</td></tr>`;
+        }
+
+        // 5. Confusion Matrix Diagonal & Visualization
+        const cmData = evalData.confusion_matrix || {};
+        const cmContainer = document.getElementById("ml-cm-container");
+        if (cmContainer && cmData.classes && cmData.matrix) {
+          renderConfusionMatrix(cmContainer, cmData.classes, cmData.matrix);
+        }
+
+      } catch (err) {
+        console.error("Load ML metrics error:", err);
+      }
+    }
+
+    function getSubjectLevel(subjectName) {
+      const schoolSubjects = ["Mathematics", "Physics", "Chemistry", "Biology", "English Literature", "History & Civics", "Economics"];
+      return schoolSubjects.includes(subjectName) ? "School (9-12)" : "College / Univ";
+    }
+
+    function renderConfusionMatrix(container, classes, matrix) {
+      let tableHtml = `
+        <div style="overflow-x:auto; max-height:480px;">
+          <table class="admin-table" style="font-size:11px; text-align:center;">
+            <thead>
+              <tr>
+                <th style="text-align:left; position:sticky; left:0; background:#fff; z-index:2;">Actual \\ Predicted</th>
+                ${classes.map(c => `<th style="writing-mode: vertical-rl; transform: rotate(180deg); padding:8px 4px; max-height:110px; font-size:10px;" title="${escapeHTML(c)}">${escapeHTML(c.slice(0, 16))}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      matrix.forEach((row, i) => {
+        tableHtml += `<tr>`;
+        tableHtml += `<td style="text-align:left; font-weight:600; position:sticky; left:0; background:#fff; z-index:1;" title="${escapeHTML(classes[i])}">${escapeHTML(classes[i])}</td>`;
+        row.forEach((val, j) => {
+          const isDiag = (i === j);
+          let bg = "#ffffff";
+          let color = "inherit";
+          if (isDiag) {
+            bg = val > 0 ? "#dcfce7" : "#fef2f2";
+            color = val > 0 ? "#166534" : "#991b1b";
+          } else if (val > 0) {
+            bg = "#fee2e2";
+            color = "#991b1b";
+          }
+          tableHtml += `<td style="background:${bg}; color:${color}; font-weight:${isDiag ? '750' : 'normal'}; padding:6px 4px;">${val}</td>`;
+        });
+        tableHtml += `</tr>`;
+      });
+
+      tableHtml += `</tbody></table></div>`;
+      container.innerHTML = tableHtml;
+    }
+
+    // 7. Audit Logs
     async function loadLogs() {
       try {
         const res = await fetch(`${API_BASE_URL}/api/admin/logs`, { credentials: "include" });

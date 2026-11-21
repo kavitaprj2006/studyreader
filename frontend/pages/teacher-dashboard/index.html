@@ -421,6 +421,20 @@
             <label for="input-subject-code">Subject Code (Optional)</label>
             <input type="text" id="input-subject-code" placeholder="e.g. CS-501">
           </div>
+          <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div>
+              <label for="select-subject-level">Academic Level</label>
+              <select id="select-subject-level" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border);">
+                <option value="college">College / University</option>
+                <option value="school">School (Class 9-12)</option>
+                <option value="general">General / Professional</option>
+              </select>
+            </div>
+            <div>
+              <label for="input-subject-grade">Course / Grade (Optional)</label>
+              <input type="text" id="input-subject-grade" placeholder="e.g. B.Tech CSE / Class 12">
+            </div>
+          </div>
           <div class="form-group">
             <label for="input-subject-desc">Description (Optional)</label>
             <textarea id="input-subject-desc" rows="2" placeholder="Course syllabus notes"></textarea>

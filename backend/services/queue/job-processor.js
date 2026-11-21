@@ -16,6 +16,7 @@ const documentProcessor = require("../document/document-processor");
 const cloudStorage = require("../storage/cloud-storage");
 const { batchGenerateEmbeddings, formatVectorLiteral } = require("../ai/embedding-service");
 const { createChunks } = require("../ai/rag-service");
+const { subjectClassifier } = require("../ml/subject-classifier");
 
 let admin = null;
 try {
@@ -242,6 +243,96 @@ class JobProcessor {
       const extracted = await documentProcessor.extractDocument(tempFile, pdf.original_filename);
       const pages = documentProcessor.toPageChunks(extracted);
       const pageCount = extracted.pageCount > 0 ? extracted.pageCount : 1;
+
+      // 3b. Smart Academic Subject Classification (ML Module - Non-blocking & Isolated)
+      try {
+        let subjectsRes = await this.pool.query(`
+          SELECT DISTINCT s.id, s.name, s.code
+          FROM subjects s
+          LEFT JOIN classroom_subjects cs ON s.id = cs.subject_id AND cs.is_archived = FALSE
+          LEFT JOIN classroom_members cm ON cs.classroom_id = cm.classroom_id
+          LEFT JOIN student_subjects ss ON s.id = ss.subject_id AND ss.is_archived = FALSE
+          WHERE ($1::bigint IS NOT NULL AND cs.classroom_id = $1)
+             OR cm.student_id = $2
+             OR ss.student_id = $2
+             OR s.created_by = $2
+        `, [pdf.classroom_id || null, pdf.user_id]);
+
+        let availableSubjects = subjectsRes.rows || [];
+        if (availableSubjects.length === 0) {
+          const fallbackRes = await this.pool.query(`
+            SELECT id, name, code FROM subjects WHERE is_active = TRUE
+          `);
+          availableSubjects = fallbackRes.rows || [];
+        }
+
+        const mlResult = subjectClassifier.classifyDocument(extracted.fullText || "", availableSubjects);
+
+        console.log(`[JobProcessor] ML Classification for PDF #${pdfId}:`, {
+          predicted: mlResult.predictedSubject,
+          matchedId: mlResult.matchedSubjectId,
+          confidence: mlResult.confidence,
+          status: mlResult.status
+        });
+
+        if (pdf.subject_id) {
+          // If the document already has a manually assigned subject, keep it authoritative
+          await this.pool.query(`
+            UPDATE pdfs
+            SET predicted_subject_id = $1,
+                prediction_confidence = $2,
+                classification_status = $3,
+                classification_model_version = $4,
+                classified_at = NOW(),
+                classification_source = COALESCE(classification_source, 'manual')
+            WHERE id = $5
+          `, [
+            mlResult.matchedSubjectId || null,
+            mlResult.confidence,
+            mlResult.status,
+            mlResult.modelVersion,
+            pdfId
+          ]);
+        } else if (mlResult.matchedSubjectId && mlResult.status === 'classified') {
+          // Auto-assign matching catalog subject
+          await this.pool.query(`
+            UPDATE pdfs
+            SET subject_id = $1,
+                predicted_subject_id = $1,
+                prediction_confidence = $2,
+                classification_status = 'classified',
+                classification_model_version = $3,
+                classified_at = NOW(),
+                classification_source = 'ml_auto'
+            WHERE id = $4
+          `, [
+            mlResult.matchedSubjectId,
+            mlResult.confidence,
+            mlResult.modelVersion,
+            pdfId
+          ]);
+        } else {
+          // Needs review or unclassified
+          await this.pool.query(`
+            UPDATE pdfs
+            SET predicted_subject_id = $1,
+                prediction_confidence = $2,
+                classification_status = $3,
+                classification_model_version = $4,
+                classified_at = NOW(),
+                classification_source = 'unclassified'
+            WHERE id = $5
+          `, [
+            mlResult.matchedSubjectId || null,
+            mlResult.confidence,
+            mlResult.status,
+            mlResult.modelVersion,
+            pdfId
+          ]);
+        }
+      } catch (mlErr) {
+        console.warn(`[JobProcessor] Non-fatal ML classification warning for PDF #${pdfId}:`, mlErr.message);
+      }
 
       // 4. Generate structured page-aware chunks
       await this.updateProgress(jobId, pdfId, 60, "processing");

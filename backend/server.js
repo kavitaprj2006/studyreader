@@ -28,6 +28,8 @@ const JobProcessor =
   require("./services/queue/job-processor");
 const embeddingService =
   require("./services/ai/embedding-service");
+const { subjectClassifier } =
+  require("./services/ml/subject-classifier");
 
 const app = express();
 
@@ -1882,13 +1884,22 @@ app.get("/api/pdfs", requireAuth, async (req, res) => {
         p.subject_id,
         p.access_scope,
         p.created_at,
+        p.predicted_subject_id,
+        p.prediction_confidence,
+        p.classification_status,
+        p.classification_model_version,
+        p.classified_at,
+        p.classification_source,
+        p.manually_selected_subject_id,
         u.name as uploader_name,
         u.role as uploader_role,
         s.name as subject_name,
+        ps.name as predicted_subject_name,
         c.name as classroom_name
       FROM pdfs p
       JOIN users u ON p.user_id = u.id
       LEFT JOIN subjects s ON p.subject_id = s.id
+      LEFT JOIN subjects ps ON p.predicted_subject_id = ps.id
       LEFT JOIN classrooms c ON p.classroom_id = c.id
       WHERE (
         p.user_id = $1
@@ -1945,6 +1956,14 @@ app.get("/api/pdfs", requireAuth, async (req, res) => {
         classroomName: pdf.classroom_name,
         subjectId: pdf.subject_id ? Number(pdf.subject_id) : null,
         subjectName: pdf.subject_name,
+        predictedSubjectId: pdf.predicted_subject_id ? Number(pdf.predicted_subject_id) : null,
+        predictedSubjectName: pdf.predicted_subject_name || null,
+        predictionConfidence: pdf.prediction_confidence !== null && pdf.prediction_confidence !== undefined ? Number(pdf.prediction_confidence) : null,
+        classificationStatus: pdf.classification_status || "unclassified",
+        classificationModelVersion: pdf.classification_model_version || null,
+        classifiedAt: pdf.classified_at || null,
+        classificationSource: pdf.classification_source || null,
+        manuallySelectedSubjectId: pdf.manually_selected_subject_id ? Number(pdf.manually_selected_subject_id) : null,
         accessScope: pdf.access_scope,
         uploadedBy: {
           name: pdf.uploader_name,
@@ -2030,6 +2049,7 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
 
     let classroomName = null;
     let subjectName = null;
+    let predictedSubjectName = null;
 
     if (document.classroom_id) {
       const cRes = await pool.query("SELECT name FROM classrooms WHERE id = $1", [document.classroom_id]);
@@ -2038,6 +2058,10 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
     if (document.subject_id) {
       const sRes = await pool.query("SELECT name FROM subjects WHERE id = $1", [document.subject_id]);
       if (sRes.rows.length) subjectName = sRes.rows[0].name;
+    }
+    if (document.predicted_subject_id) {
+      const psRes = await pool.query("SELECT name FROM subjects WHERE id = $1", [document.predicted_subject_id]);
+      if (psRes.rows.length) predictedSubjectName = psRes.rows[0].name;
     }
 
     return res.status(200).json({
@@ -2059,6 +2083,14 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
         classroomName: classroomName,
         subjectId: document.subject_id ? Number(document.subject_id) : null,
         subjectName: subjectName,
+        predictedSubjectId: document.predicted_subject_id ? Number(document.predicted_subject_id) : null,
+        predictedSubjectName: predictedSubjectName,
+        predictionConfidence: document.prediction_confidence !== null && document.prediction_confidence !== undefined ? Number(document.prediction_confidence) : null,
+        classificationStatus: document.classification_status || "unclassified",
+        classificationModelVersion: document.classification_model_version || null,
+        classifiedAt: document.classified_at || null,
+        classificationSource: document.classification_source || null,
+        manuallySelectedSubjectId: document.manually_selected_subject_id ? Number(document.manually_selected_subject_id) : null,
         accessScope: document.access_scope,
         storageProvider: document.storage_provider,
         storagePath: document.storage_path,
@@ -2075,6 +2107,96 @@ app.get("/api/pdfs/:id", requireAuth, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to retrieve document details."
+    });
+  }
+});
+
+// ============================================================
+// UPDATE DOCUMENT SUBJECT (MANUAL CLASSIFICATION / RECLASSIFICATION)
+// ============================================================
+
+app.patch("/api/pdfs/:id/subject", requireAuth, async (req, res) => {
+  try {
+    const pdfId = req.params.id;
+    const { subjectId } = req.body;
+
+    if (!subjectId) {
+      return res.status(400).json({
+        success: false,
+        message: "Subject ID is required."
+      });
+    }
+
+    // Check if user has permission to update this document
+    // User must be: admin, uploader of PDF, or teacher of the classroom
+    let authorized = false;
+    const docRes = await pool.query("SELECT * FROM pdfs WHERE id = $1", [pdfId]);
+    if (docRes.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found."
+      });
+    }
+
+    const doc = docRes.rows[0];
+    if (req.user.role === "admin" || String(doc.user_id) === String(req.user.id)) {
+      authorized = true;
+    } else if (doc.classroom_id) {
+      const classCheck = await pool.query(
+        "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2",
+        [doc.classroom_id, req.user.id]
+      );
+      if (classCheck.rows.length > 0) {
+        authorized = true;
+      }
+    }
+
+    if (!authorized) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to update this document's subject."
+      });
+    }
+
+    // Verify subject exists
+    const subjectRes = await pool.query("SELECT id, name FROM subjects WHERE id = $1", [subjectId]);
+    if (subjectRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Specified subject does not exist."
+      });
+    }
+    const subject = subjectRes.rows[0];
+
+    // Update document with manual subject selection
+    const updateRes = await pool.query(
+      `UPDATE pdfs
+       SET subject_id = $1,
+           manually_selected_subject_id = $1,
+           classification_source = 'manual',
+           classification_status = 'classified'
+       WHERE id = $2
+       RETURNING id, subject_id, manually_selected_subject_id, classification_source, classification_status`,
+      [subject.id, pdfId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Document subject updated to '${subject.name}'.`,
+      document: {
+        id: updateRes.rows[0].id,
+        subjectId: updateRes.rows[0].subject_id,
+        subjectName: subject.name,
+        manuallySelectedSubjectId: updateRes.rows[0].manually_selected_subject_id,
+        classificationSource: updateRes.rows[0].classification_source,
+        classificationStatus: updateRes.rows[0].classification_status
+      }
+    });
+  } catch (error) {
+    console.error("Update PDF subject error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update document subject."
     });
   }
 });
@@ -4031,7 +4153,7 @@ app.get("/api/classrooms/:id", requireAuth, async (req, res) => {
 app.post("/api/classrooms/:id/subjects", requireAuth, requireRole(["teacher", "admin"]), async (req, res) => {
   try {
     const classroomId = req.params.id;
-    const { name, code, description } = req.body;
+    const { name, code, description, educationalLevel, courseOrGrade, semester } = req.body;
 
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({
@@ -4056,14 +4178,17 @@ app.post("/api/classrooms/:id/subjects", requireAuth, requireRole(["teacher", "a
 
     // Create subject
     const subjectResult = await pool.query(
-      `INSERT INTO subjects (name, code, description, created_by)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, code, description, created_at`,
+      `INSERT INTO subjects (name, code, description, created_by, educational_level, course_or_grade, semester)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, name, code, description, educational_level, course_or_grade, semester, created_at`,
       [
         name.trim(),
         code ? String(code).trim() : null,
         description ? String(description).trim() : null,
-        req.user.id
+        req.user.id,
+        educationalLevel ? String(educationalLevel).trim() : 'general',
+        courseOrGrade ? String(courseOrGrade).trim() : null,
+        semester ? String(semester).trim() : null
       ]
     );
 
@@ -4084,6 +4209,9 @@ app.post("/api/classrooms/:id/subjects", requireAuth, requireRole(["teacher", "a
         name: subject.name,
         code: subject.code,
         description: subject.description,
+        educationalLevel: subject.educational_level,
+        courseOrGrade: subject.course_or_grade,
+        semester: subject.semester,
         classroomId: Number(classroomId),
         createdAt: subject.created_at
       }
@@ -4101,7 +4229,7 @@ app.post("/api/classrooms/:id/subjects", requireAuth, requireRole(["teacher", "a
 // 2. Create Personal Subject (Student or Teacher)
 app.post("/api/subjects/personal", requireAuth, async (req, res) => {
   try {
-    const { name, code, description } = req.body;
+    const { name, code, description, educationalLevel, courseOrGrade, semester } = req.body;
 
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({
@@ -4111,14 +4239,17 @@ app.post("/api/subjects/personal", requireAuth, async (req, res) => {
     }
 
     const subjectResult = await pool.query(
-      `INSERT INTO subjects (name, code, description, created_by)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, code, description, created_at`,
+      `INSERT INTO subjects (name, code, description, created_by, educational_level, course_or_grade, semester)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, name, code, description, educational_level, course_or_grade, semester, created_at`,
       [
         name.trim(),
         code ? String(code).trim() : null,
         description ? String(description).trim() : null,
-        req.user.id
+        req.user.id,
+        educationalLevel ? String(educationalLevel).trim() : 'general',
+        courseOrGrade ? String(courseOrGrade).trim() : null,
+        semester ? String(semester).trim() : null
       ]
     );
 
@@ -4138,6 +4269,9 @@ app.post("/api/subjects/personal", requireAuth, async (req, res) => {
         name: subject.name,
         code: subject.code,
         description: subject.description,
+        educationalLevel: subject.educational_level,
+        courseOrGrade: subject.course_or_grade,
+        semester: subject.semester,
         isPersonal: true,
         createdAt: subject.created_at
       }
@@ -4168,6 +4302,9 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
           s.name,
           s.code,
           s.description,
+          s.educational_level,
+          s.course_or_grade,
+          s.semester as subject_semester,
           s.created_at,
           c.id as classroom_id,
           c.name as classroom_name,
@@ -4184,7 +4321,7 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
         JOIN subjects s ON cs.subject_id = s.id
         LEFT JOIN pdfs p ON p.subject_id = s.id AND p.classroom_id = c.id
         WHERE c.teacher_id = $1 AND c.is_archived = FALSE
-        GROUP BY s.id, s.name, s.code, s.description, s.created_at, c.id, c.name, c.semester, c.section, u.name
+        GROUP BY s.id, s.name, s.code, s.description, s.educational_level, s.course_or_grade, s.semester, s.created_at, c.id, c.name, c.semester, c.section, u.name
 
         UNION ALL
 
@@ -4193,6 +4330,9 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
           s.name,
           s.code,
           s.description,
+          s.educational_level,
+          s.course_or_grade,
+          s.semester as subject_semester,
           s.created_at,
           NULL as classroom_id,
           'Personal Space' as classroom_name,
@@ -4208,7 +4348,7 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
         JOIN users u ON ss.student_id = u.id
         LEFT JOIN pdfs p ON p.subject_id = s.id AND p.user_id = $1 AND p.access_scope = 'private'
         WHERE ss.student_id = $1 AND ss.is_archived = FALSE
-        GROUP BY s.id, s.name, s.code, s.description, s.created_at, u.name
+        GROUP BY s.id, s.name, s.code, s.description, s.educational_level, s.course_or_grade, s.semester, s.created_at, u.name
 
         ORDER BY name ASC
       `;
@@ -4220,6 +4360,9 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
           s.name,
           s.code,
           s.description,
+          s.educational_level,
+          s.course_or_grade,
+          s.semester as subject_semester,
           s.created_at,
           c.id as classroom_id,
           c.name as classroom_name,
@@ -4237,7 +4380,7 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
         JOIN subjects s ON cs.subject_id = s.id
         LEFT JOIN pdfs p ON p.subject_id = s.id AND (p.classroom_id = c.id OR (p.user_id = $1 AND p.classroom_id IS NULL))
         WHERE cm.student_id = $1
-        GROUP BY s.id, s.name, s.code, s.description, s.created_at, c.id, c.name, c.semester, c.section, u.name
+        GROUP BY s.id, s.name, s.code, s.description, s.educational_level, s.course_or_grade, s.semester, s.created_at, c.id, c.name, c.semester, c.section, u.name
 
         UNION ALL
 
@@ -4246,6 +4389,9 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
           s.name,
           s.code,
           s.description,
+          s.educational_level,
+          s.course_or_grade,
+          s.semester as subject_semester,
           s.created_at,
           NULL as classroom_id,
           'Personal Space' as classroom_name,
@@ -4261,7 +4407,7 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
         JOIN users u ON ss.student_id = u.id
         LEFT JOIN pdfs p ON p.subject_id = s.id AND p.user_id = $1 AND p.access_scope = 'private'
         WHERE ss.student_id = $1 AND ss.is_archived = FALSE
-        GROUP BY s.id, s.name, s.code, s.description, s.created_at, u.name
+        GROUP BY s.id, s.name, s.code, s.description, s.educational_level, s.course_or_grade, s.semester, s.created_at, u.name
 
         ORDER BY name ASC
       `;
@@ -4276,6 +4422,9 @@ app.get("/api/subjects/my-subjects", requireAuth, async (req, res) => {
         name: s.name,
         code: s.code,
         description: s.description,
+        educationalLevel: s.educational_level || "general",
+        courseOrGrade: s.course_or_grade || null,
+        subjectSemester: s.subject_semester || null,
         classroomId: s.classroom_id,
         classroomName: s.classroom_name,
         semester: s.semester,
@@ -4820,6 +4969,99 @@ app.get("/api/admin/cache/metrics", requireAuth, requireRole(["admin"]), async (
   } catch (error) {
     console.error("Admin cache metrics error:", error);
     return res.status(500).json({ success: false, message: "Unable to retrieve cache metrics." });
+  }
+});
+
+// ============================================================
+// ADMIN MACHINE LEARNING CLASSIFIER METRICS & OPERATIONS
+// ============================================================
+
+app.get("/api/admin/ml/metrics", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    // 1. Model Metadata & Status
+    const modelInfo = {
+      name: "Logistic Regression",
+      alternativeModel: "Multinomial Naive Bayes",
+      featureExtraction: "TF-IDF (unigrams + bigrams, sublinear tf)",
+      type: "Supervised Classification",
+      version: subjectClassifier.version || "1.0.0",
+      classesCount: subjectClassifier.classes ? subjectClassifier.classes.length : 15,
+      classes: subjectClassifier.classes || [],
+      confidenceThreshold: subjectClassifier.confidenceThreshold || 0.35,
+      status: subjectClassifier.isLoaded ? "Active" : "Unavailable",
+      isLoaded: subjectClassifier.isLoaded
+    };
+
+    // 2. Read Offline Evaluation Metrics artifact
+    let evaluationData = null;
+    try {
+      const evalPath = path.join(__dirname, "services", "ml", "evaluation-metrics.json");
+      if (fs.existsSync(evalPath)) {
+        const rawEval = fs.readFileSync(evalPath, "utf8");
+        evaluationData = JSON.parse(rawEval);
+      }
+    } catch (e) {
+      console.warn("Could not read evaluation-metrics.json:", e.message);
+    }
+
+    // 3. Query Live Operational Stats from PostgreSQL
+    const statsQuery = `
+      SELECT
+        COUNT(*)::int as total_documents,
+        COUNT(*) FILTER (WHERE classification_status = 'classified')::int as classified_count,
+        COUNT(*) FILTER (WHERE classification_status = 'needs_review')::int as needs_review_count,
+        COUNT(*) FILTER (WHERE classification_status = 'failed')::int as failed_count,
+        COUNT(*) FILTER (WHERE classification_status = 'unclassified' OR classification_status IS NULL)::int as unclassified_count,
+        COUNT(*) FILTER (WHERE classification_source = 'manual')::int as manually_corrected_count,
+        COUNT(*) FILTER (WHERE classification_source = 'ml_auto')::int as ml_auto_count,
+        AVG(prediction_confidence) FILTER (WHERE prediction_confidence IS NOT NULL)::numeric(5,4) as avg_confidence,
+        MAX(classified_at) as last_classification_at
+      FROM pdfs
+    `;
+    const statsRes = await pool.query(statsQuery);
+    const row = statsRes.rows[0] || {};
+
+    const jobsQuery = `
+      SELECT COUNT(*)::int as pending_jobs
+      FROM document_jobs
+      WHERE status IN ('pending', 'processing')
+    `;
+    const jobsRes = await pool.query(jobsQuery);
+    const pendingJobs = jobsRes.rows[0] ? jobsRes.rows[0].pending_jobs : 0;
+
+    const classifiedCount = row.classified_count || 0;
+    const needsReviewCount = row.needs_review_count || 0;
+    const failedCount = row.failed_count || 0;
+    const totalProcessed = classifiedCount + needsReviewCount + failedCount;
+    const successRate = totalProcessed > 0 ? Number(((classifiedCount / totalProcessed) * 100).toFixed(1)) : null;
+
+    const operations = {
+      totalDocuments: row.total_documents || 0,
+      totalProcessed,
+      classifiedCount,
+      needsReviewCount,
+      failedCount,
+      unclassifiedCount: row.unclassified_count || 0,
+      manuallyCorrectedCount: row.manually_corrected_count || 0,
+      mlAutoCount: row.ml_auto_count || 0,
+      successRate,
+      averageConfidence: row.avg_confidence !== null && row.avg_confidence !== undefined ? Number(row.avg_confidence) : null,
+      lastClassificationAt: row.last_classification_at || null,
+      pendingJobs
+    };
+
+    return res.status(200).json({
+      success: true,
+      model: modelInfo,
+      evaluation: evaluationData,
+      operations
+    });
+  } catch (error) {
+    console.error("Admin ML metrics error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve ML metrics."
+    });
   }
 });
 
