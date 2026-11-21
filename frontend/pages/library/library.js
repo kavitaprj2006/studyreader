@@ -464,6 +464,13 @@ function renderPDFCards(pdfs) {
   connectPDFCardEvents();
 }
 
+function canModifyDocument(pdf) {
+  if (!pdf) return false;
+  if (pdf.uploadedBy && pdf.uploadedBy.isMe) return true;
+  if (currentUser && (currentUser.role === "teacher" || currentUser.role === "admin")) return true;
+  return false;
+}
+
 function renderPDFCard(pdf) {
   const name = pdf.originalFilename || pdf.filename || "Untitled Document";
   const safeName = escapeHTML(name);
@@ -472,12 +479,25 @@ function renderPDFCard(pdf) {
   const pages = pdf.pageCount ? `${pdf.pageCount} pages` : "Pages n/a";
 
   let subjectBadge = "";
-  if (pdf.subjectName) {
+  let actionButton = "";
+  const userCanModify = canModifyDocument(pdf);
+
+  if (pdf.classificationStatus === "manually_assigned" || (pdf.classificationSource === "manual" && pdf.subjectName)) {
+    subjectBadge = `<span class="tag-subject" title="Manually assigned subject">▣ ${escapeHTML(pdf.subjectName || "Subject")} <small style="opacity:0.85; font-size:10px;">(Manual)</small></span>`;
+  } else if (pdf.classificationStatus === "needs_review") {
+    subjectBadge = `<span class="tag-subject needs-review" style="background:#fef3c7; color:#92400e; border:1px solid #f59e0b; padding:2px 7px; border-radius:4px; font-size:11px; font-weight:600;" title="Subject classification needs review">⚡ Needs Review</span>`;
+    if (userCanModify) {
+      actionButton = `<button type="button" class="btn-action-review amber btn-review-subject" data-id="${pdf.id}" title="Review ML predicted subject">⚡ Review Subject</button>`;
+    }
+  } else if (pdf.subjectName) {
     const isAuto = pdf.classificationSource === "ml_auto";
     const confText = isAuto && pdf.predictionConfidence ? ` <small style="opacity:0.8; font-size:10px;">(${Math.round(pdf.predictionConfidence * 100)}%)</small>` : "";
     subjectBadge = `<span class="tag-subject" title="${isAuto ? 'Auto-classified by Machine Learning' : 'Academic Subject'}">▣ ${escapeHTML(pdf.subjectName)}${confText}</span>`;
-  } else if (pdf.classificationStatus === "needs_review") {
-    subjectBadge = `<span class="tag-subject needs-review" style="background:#fef3c7; color:#92400e; border:1px dashed #f59e0b; padding:1px 6px; border-radius:4px; font-size:11px;" title="ML detected subject needs review">⚡ Needs Review</span>`;
+  } else {
+    subjectBadge = `<span class="tag-subject unclassified" style="background:#f1f5f9; color:#475569; border:1px dashed #cbd5e1; padding:2px 7px; border-radius:4px; font-size:11px;" title="No academic subject assigned">No Subject</span>`;
+    if (userCanModify) {
+      actionButton = `<button type="button" class="btn-action-review primary btn-assign-subject" data-id="${pdf.id}" title="Assign an academic subject">🏷 Assign Subject</button>`;
+    }
   }
 
   const classroomBadge = pdf.classroomName ? `<span>🏛 ${escapeHTML(pdf.classroomName)}</span>` : "";
@@ -503,26 +523,30 @@ function renderPDFCard(pdf) {
           <span>${pages}</span>
           <span>${formatDate(pdf.createdAt)}</span>
         </div>
+        ${actionButton ? `<div style="margin-top: 10px;">${actionButton}</div>` : ""}
       </div>
 
       <!-- THREE DOT MENU -->
       <div class="pdf-menu-wrapper">
         <button type="button" class="pdf-menu-button" aria-label="Options" data-menu-button>⋮</button>
-        <div class="pdf-context-menu" data-pdf-menu style="display:none; position:absolute; right:0; top:calc(100% + 4px); background:#fff; border:1px solid var(--border); border-radius:10px; box-shadow:0 10px 25px rgba(0,0,0,0.1); z-index:100; min-width:160px; padding:6px;">
-          <button type="button" class="pdf-menu-item" data-action="open" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
+        <div class="pdf-context-menu" data-pdf-menu>
+          <button type="button" class="pdf-menu-item" data-action="open" data-id="${pdf.id}">
             <span>↗</span> <span>Open Document</span>
           </button>
-          <button type="button" class="pdf-menu-item" data-action="read-aloud" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
+          <button type="button" class="pdf-menu-item" data-action="read-aloud" data-id="${pdf.id}">
             <span>🔊</span> <span>Read Aloud</span>
           </button>
-          <button type="button" class="pdf-menu-item" data-action="ask-ai" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
+          <button type="button" class="pdf-menu-item" data-action="ask-ai" data-id="${pdf.id}">
             <span>✦</span> <span>Study with AI</span>
           </button>
-          <button type="button" class="pdf-menu-item" data-action="change-subject" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px;">
-            <span>🏷</span> <span>Change Subject</span>
+          ${userCanModify ? `
+          <button type="button" class="pdf-menu-item" data-action="change-subject" data-id="${pdf.id}">
+            <span>${pdf.classificationStatus === 'needs_review' ? '⚡' : '🏷'}</span>
+            <span>${pdf.classificationStatus === 'needs_review' ? 'Review Subject' : (pdf.subjectId ? 'Change Subject' : 'Assign Subject')}</span>
           </button>
+          ` : ""}
           <hr style="border:0; border-top:1px solid var(--border); margin:4px 0;">
-          <button type="button" class="pdf-menu-item delete-item" data-action="delete" data-id="${pdf.id}" style="width:100%; text-align:left; background:none; border:none; padding:8px 12px; cursor:pointer; font-size:13px; border-radius:6px; display:flex; align-items:center; gap:8px; color:#dc2626;">
+          <button type="button" class="pdf-menu-item delete-item" data-action="delete" data-id="${pdf.id}">
             <span>⌫</span> <span>Delete</span>
           </button>
         </div>
@@ -531,11 +555,20 @@ function renderPDFCard(pdf) {
   `;
 }
 
+function closeAllPDFMenus() {
+  document.querySelectorAll("[data-pdf-menu].show").forEach((m) => {
+    m.classList.remove("show");
+  });
+  document.querySelectorAll(".library-card.menu-open").forEach((card) => {
+    card.classList.remove("menu-open");
+  });
+}
+
 function connectPDFCardEvents() {
   // Double-click or open action
   document.querySelectorAll(".library-card").forEach((card) => {
     card.addEventListener("dblclick", (e) => {
-      if (e.target.closest(".pdf-menu-wrapper")) return;
+      if (e.target.closest(".pdf-menu-wrapper") || e.target.closest(".btn-action-review")) return;
       openDocumentWorkspace(card.dataset.pdfId);
     });
 
@@ -545,19 +578,25 @@ function connectPDFCardEvents() {
     if (menuBtn && menu) {
       menuBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        // Close all other menus
-        document.querySelectorAll("[data-pdf-menu]").forEach((m) => {
-          if (m !== menu) m.style.display = "none";
-        });
-        menu.style.display = menu.style.display === "block" ? "none" : "block";
+        const isOpen = menu.classList.contains("show");
+        closeAllPDFMenus();
+        if (!isOpen) {
+          menu.classList.add("show");
+          card.classList.add("menu-open");
+        }
+      });
+
+      menu.addEventListener("click", (e) => {
+        e.stopPropagation();
       });
     }
   });
 
-  // Close menus when clicking outside
-  document.addEventListener("click", () => {
-    document.querySelectorAll("[data-pdf-menu]").forEach((m) => {
-      m.style.display = "none";
+  // Review / Assign Subject buttons directly on cards
+  document.querySelectorAll(".btn-review-subject, .btn-assign-subject").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openChangeSubjectModal(btn.dataset.id);
     });
   });
 
@@ -567,6 +606,7 @@ function connectPDFCardEvents() {
       e.stopPropagation();
       const action = item.dataset.action;
       const id = item.dataset.id;
+      closeAllPDFMenus();
 
       if (action === "open" || action === "read-aloud" || action === "ask-ai") {
         openDocumentWorkspace(id);
@@ -579,6 +619,17 @@ function connectPDFCardEvents() {
   });
 }
 
+// Global outside click and Escape handlers
+document.addEventListener("click", () => {
+  closeAllPDFMenus();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeAllPDFMenus();
+  }
+});
+
 function openChangeSubjectModal(pdfId) {
   const pdf = allPDFs.find((p) => String(p.id) === String(pdfId));
   if (!pdf) return;
@@ -586,17 +637,141 @@ function openChangeSubjectModal(pdfId) {
   const select = document.getElementById("select-change-subject");
   const idInput = document.getElementById("change-subject-pdf-id");
   const nameP = document.getElementById("change-subject-doc-name");
+  const mlBox = document.getElementById("change-subject-ml-box");
+  const mlBadge = document.getElementById("change-subject-ml-badge");
+  const mlDetails = document.getElementById("change-subject-ml-details");
+  const inlineBox = document.getElementById("inline-create-subject-box");
+  const inlineError = document.getElementById("inline-create-error");
 
   if (idInput) idInput.value = pdf.id;
-  if (nameP) nameP.textContent = `Document: ${pdf.originalFilename || pdf.filename}`;
+  if (nameP) nameP.textContent = pdf.originalFilename || pdf.filename || "Document";
+  if (inlineBox) inlineBox.style.display = "none";
+  if (inlineError) inlineError.style.display = "none";
 
+  // Populate ML Box
+  if (mlBox && mlBadge && mlDetails) {
+    if (pdf.classificationStatus === "needs_review") {
+      mlBadge.textContent = "⚡ Needs Review";
+      mlBadge.style.background = "#fef3c7";
+      mlBadge.style.color = "#92400e";
+      mlBadge.style.border = "1px solid #f59e0b";
+      const confPct = pdf.predictionConfidence ? `${Math.round(pdf.predictionConfidence * 100)}%` : null;
+      mlDetails.innerHTML = `Model predicted <strong>${escapeHTML(pdf.predictedSubjectName || "Uncertain")}</strong>${confPct ? ` with <strong>${confPct}</strong> confidence` : ""}, which requires review before assigning. Please select or add the correct subject below.`;
+      mlBox.style.display = "block";
+    } else if (pdf.predictedSubjectName) {
+      const isManual = pdf.classificationStatus === "manually_assigned" || pdf.classificationSource === "manual";
+      mlBadge.textContent = isManual ? "Manually Assigned" : "ML Classified";
+      mlBadge.style.background = isManual ? "#eff6ff" : "#ecfdf5";
+      mlBadge.style.color = isManual ? "#1d4ed8" : "#047857";
+      mlBadge.style.border = isManual ? "1px solid #93c5fd" : "1px solid #a7f3d0";
+      const confPct = pdf.predictionConfidence ? ` (${Math.round(pdf.predictionConfidence * 100)}% confidence)` : "";
+      mlDetails.innerHTML = `Original prediction: <strong>${escapeHTML(pdf.predictedSubjectName)}</strong>${confPct}. Current assigned subject is shown below.`;
+      mlBox.style.display = "block";
+    } else {
+      mlBox.style.display = "none";
+    }
+  }
+
+  // Populate Subject Select
   if (select) {
-    select.innerHTML = '<option value="">Choose academic subject...</option>' +
-      mySubjects.map((s) => `
-        <option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>
-          ${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""} [${escapeHTML(s.classroomName || 'Personal')}]
-        </option>
-      `).join("");
+    let optionsHtml = '<option value="">Choose academic subject...</option>';
+
+    // Group subjects
+    const classroomSubs = mySubjects.filter((s) => pdf.classroomId && s.classroomId === pdf.classroomId);
+    const otherSubs = mySubjects.filter((s) => !pdf.classroomId || s.classroomId !== pdf.classroomId);
+
+    if (classroomSubs.length > 0) {
+      optionsHtml += `<optgroup label="Classroom Subjects">` +
+        classroomSubs.map((s) => `
+          <option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>
+            ${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}
+          </option>
+        `).join("") + `</optgroup>`;
+    }
+
+    if (otherSubs.length > 0) {
+      optionsHtml += `<optgroup label="${classroomSubs.length > 0 ? "Other Available Subjects" : "Subjects"}">` +
+        otherSubs.map((s) => `
+          <option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>
+            ${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""} ${s.classroomName ? `[${escapeHTML(s.classroomName)}]` : ''}
+          </option>
+        `).join("") + `</optgroup>`;
+    }
+
+    select.innerHTML = optionsHtml;
+  }
+
+  // Toggle inline subject creator
+  const toggleBtn = document.getElementById("btn-toggle-inline-create-subject");
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      if (inlineBox) {
+        inlineBox.style.display = inlineBox.style.display === "none" ? "block" : "none";
+        if (inlineBox.style.display === "block") {
+          document.getElementById("input-inline-subject-name")?.focus();
+        }
+      }
+    };
+  }
+
+  // Wire confirm inline subject creator
+  const confirmBtn = document.getElementById("btn-confirm-inline-create");
+  if (confirmBtn) {
+    confirmBtn.onclick = async () => {
+      const nameInput = document.getElementById("input-inline-subject-name");
+      const subName = nameInput?.value?.trim();
+      if (!subName || subName.length < 2) {
+        if (inlineError) {
+          inlineError.textContent = "Please enter a subject name (min 2 characters).";
+          inlineError.style.display = "block";
+        }
+        return;
+      }
+
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = "Adding...";
+      if (inlineError) inlineError.style.display = "none";
+
+      try {
+        let createUrl = `${API_BASE_URL}/api/subjects/personal`;
+        let createBody = { name: subName };
+        if (pdf.classroomId) {
+          createUrl = `${API_BASE_URL}/api/classrooms/${pdf.classroomId}/subjects`;
+        }
+
+        const res = await fetch(createUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(createBody)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || "Failed to create subject.");
+        }
+
+        const newSub = data.subject || { id: data.id, name: subName };
+        mySubjects.push(newSub);
+
+        // Add to select and select it
+        const newOpt = new Option(newSub.name, newSub.id, true, true);
+        select.add(newOpt);
+        select.value = newSub.id;
+
+        if (inlineBox) inlineBox.style.display = "none";
+        if (nameInput) nameInput.value = "";
+        showToast(`Subject "${newSub.name}" added successfully!`);
+      } catch (createErr) {
+        if (inlineError) {
+          inlineError.textContent = createErr.message || "Could not create subject.";
+          inlineError.style.display = "block";
+        }
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Add";
+      }
+    };
   }
 
   openModal("modal-change-subject");
@@ -619,7 +794,7 @@ function connectChangeSubjectForm() {
     const submitBtn = document.getElementById("btn-submit-change-subject");
     if (submitBtn) {
       submitBtn.disabled = true;
-      submitBtn.textContent = "Updating...";
+      submitBtn.textContent = "Saving...";
     }
 
     try {
@@ -636,17 +811,19 @@ function connectChangeSubjectForm() {
         return;
       }
 
-      // Update in local state
+      // Update in local state immediately
       const pdf = allPDFs.find((p) => String(p.id) === String(pdfId));
       if (pdf && data.document) {
         pdf.subjectId = data.document.subjectId;
         pdf.subjectName = data.document.subjectName;
-        pdf.classificationSource = data.document.classificationSource;
-        pdf.classificationStatus = data.document.classificationStatus;
+        pdf.classificationSource = "manual";
+        pdf.classificationStatus = "manually_assigned";
+        pdf.manuallySelectedSubjectId = data.document.subjectId;
       }
 
       closeModal("modal-change-subject");
       renderFilteredPDFs();
+      showToast(`Subject updated to "${data.document?.subjectName || 'assigned'}" successfully!`);
     } catch (err) {
       console.error("Change subject error:", err);
       alert("Network error updating subject.");

@@ -178,9 +178,24 @@
 
         <div class="dashboard-grid-layout">
 
-          <!-- LEFT COLUMN: RECENT CLASSROOMS -->
+          <!-- LEFT COLUMN: RECENT CLASSROOMS & REVIEWS -->
 
-          <section class="dashboard-card" id="section-classrooms">
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+
+            <!-- AWAITING SUBJECT REVIEW SECTION (Displayed when documents need review) -->
+            <section class="dashboard-card" id="section-review-needed" style="display: none; border-color: #f59e0b; background: #fffbeb;">
+              <div class="card-header" style="margin-bottom: 12px;">
+                <div>
+                  <h2 style="color: #92400e; display: flex; align-items: center; gap: 8px;">
+                    <span>⚡</span> <span id="review-needed-title">Materials Awaiting Subject Review</span>
+                  </h2>
+                  <p style="color: #b45309;">Academic documents awaiting teacher subject confirmation or correction</p>
+                </div>
+              </div>
+              <div id="review-needed-list" style="display: flex; flex-direction: column; gap: 10px;"></div>
+            </section>
+
+            <section class="dashboard-card" id="section-classrooms">
 
             <div class="card-header">
               <div>
@@ -209,6 +224,8 @@
             <div id="classrooms-list" class="classrooms-container" style="display: none;"></div>
 
           </section>
+
+          </div>
 
 
           <!-- RIGHT COLUMN: QUICK ACTIONS CARD -->
@@ -353,6 +370,67 @@
           <button type="button" class="action-btn" id="btn-cancel-delete-classroom" style="width: auto; padding: 10px 22px; cursor: pointer;">Cancel</button>
           <button type="button" class="action-btn" id="btn-confirm-delete-classroom" style="width: auto; padding: 10px 22px; background: #dc2626; color: #ffffff; border-color: #dc2626; font-weight: 600; cursor: pointer;">Delete Classroom</button>
         </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Assign / Review Academic Subject -->
+  <dialog id="modal-change-subject" class="sr-modal">
+    <div class="modal-box" style="max-width: 480px;">
+      <div class="modal-head">
+        <h3 id="change-subject-modal-title">Review & Assign Academic Subject</h3>
+        <button type="button" class="modal-close-btn" data-close-modal="modal-change-subject">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- Document Name card -->
+        <div style="background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 3px;">Document</div>
+          <div id="change-subject-doc-name" style="font-size: 13.5px; font-weight: 700; color: var(--text); word-break: break-all;"></div>
+        </div>
+
+        <!-- ML Analysis Card -->
+        <div id="change-subject-ml-box" style="margin-bottom: 14px; padding: 12px 14px; border-radius: 8px; border: 1px solid #e2e8f0; background: #ffffff;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 12px; font-weight: 700; color: #334155; display: inline-flex; align-items: center; gap: 6px;">
+              <span>🤖</span> ML Classification
+            </span>
+            <span id="change-subject-ml-badge" style="font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 12px;"></span>
+          </div>
+          <div id="change-subject-ml-details" style="font-size: 13px; color: #475569; line-height: 1.4;"></div>
+        </div>
+
+        <form id="form-change-subject">
+          <input type="hidden" id="change-subject-pdf-id">
+          
+          <div class="form-group" style="margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <label for="select-change-subject" style="font-weight: 700; font-size: 13px; color: var(--text); margin-bottom: 0;">Academic Subject</label>
+              <button type="button" id="btn-toggle-inline-create-subject" style="background: none; border: none; color: #2563eb; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: underline;">
+                + Create New Subject
+              </button>
+            </div>
+            <select id="select-change-subject" required style="width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 13.5px; background: #ffffff;">
+              <option value="">Choose academic subject...</option>
+            </select>
+          </div>
+
+          <!-- Inline quick subject creation (hidden by default) -->
+          <div id="inline-create-subject-box" style="display: none; background: #eff6ff; border: 1px dashed #93c5fd; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+            <div style="font-size: 12px; font-weight: 700; color: #1e40af; margin-bottom: 8px;">➕ Create New Academic Subject</div>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="input-inline-subject-name" placeholder="Subject Name (e.g. Propositional Logic)" style="flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 13px;">
+              <button type="button" id="btn-confirm-inline-create" style="background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">
+                Add
+              </button>
+            </div>
+            <p id="inline-create-error" style="font-size: 11.5px; color: #dc2626; margin-top: 5px; display: none;"></p>
+          </div>
+
+          <div class="modal-actions" style="margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="button" class="btn-sm" data-close-modal="modal-change-subject">Cancel</button>
+            <button type="submit" id="btn-submit-change-subject" class="btn-sm primary">Save Subject</button>
+          </div>
+        </form>
       </div>
     </div>
   </dialog>

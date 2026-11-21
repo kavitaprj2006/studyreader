@@ -279,11 +279,17 @@ class JobProcessor {
         let predictedCatalogSubjectId = mlResult.matchedSubjectId || null;
         if (!predictedCatalogSubjectId && mlResult.predictedSubject) {
           try {
-            const catRes = await this.pool.query(
+            let catRes = await this.pool.query(
               `SELECT id FROM subjects WHERE LOWER(name) = LOWER($1) AND is_active = TRUE LIMIT 1`,
               [mlResult.predictedSubject]
             );
-            if (catRes.rows.length > 0) {
+            if (catRes.rows.length === 0) {
+              const ins = await this.pool.query(
+                `INSERT INTO subjects (name, is_active, educational_level) VALUES ($1, TRUE, 'general') RETURNING id`,
+                [mlResult.predictedSubject]
+              );
+              predictedCatalogSubjectId = ins.rows[0].id;
+            } else {
               predictedCatalogSubjectId = catRes.rows[0].id;
             }
           } catch (_) {}
@@ -297,21 +303,23 @@ class JobProcessor {
           status: mlResult.status
         });
 
-        if (pdf.subject_id) {
+        if (pdf.subject_id || pdf.classification_source === 'manual') {
           // If the document already has a manually assigned subject, keep it authoritative
+          const statusToKeep = pdf.classification_status === 'manually_assigned' ? 'manually_assigned' : 'classified';
           await this.pool.query(`
             UPDATE pdfs
             SET predicted_subject_id = $1,
                 prediction_confidence = $2,
-                classification_status = 'classified',
-                classification_model_version = $3,
+                classification_status = $3,
+                classification_model_version = $4,
                 classified_at = NOW(),
                 classification_source = 'manual',
                 manually_selected_subject_id = COALESCE(manually_selected_subject_id, subject_id)
-            WHERE id = $4
+            WHERE id = $5
           `, [
             predictedCatalogSubjectId,
             mlResult.confidence,
+            statusToKeep,
             mlResult.modelVersion,
             pdfId
           ]);

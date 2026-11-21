@@ -146,6 +146,7 @@ async function loadClassrooms() {
     }
 
     populateClassroomSelects();
+    await loadReviewNeededMaterials();
 
   } catch (error) {
     console.error("Error loading classrooms:", error);
@@ -310,15 +311,29 @@ function connectClassroomCardActions() {
       e.stopPropagation();
       const targetId = btn.getAttribute("data-menu-target");
       const dropdown = document.getElementById(targetId);
+      const card = btn.closest(".classroom-card");
 
-      // Close other open menus
+      const willOpen = dropdown && !dropdown.classList.contains("show");
+
+      // Close all other menus and remove menu-open
       document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
-        if (d !== dropdown) d.classList.remove("show");
+        d.classList.remove("show");
+      });
+      document.querySelectorAll(".classroom-card.menu-open").forEach((c) => {
+        c.classList.remove("menu-open");
       });
 
-      if (dropdown) {
-        dropdown.classList.toggle("show");
+      if (willOpen && dropdown) {
+        dropdown.classList.add("show");
+        if (card) card.classList.add("menu-open");
       }
+    });
+  });
+
+  // Prevent clicks inside the dropdown from closing it prematurely
+  document.querySelectorAll(".classroom-menu-dropdown").forEach((dropdown) => {
+    dropdown.addEventListener("click", (e) => {
+      e.stopPropagation();
     });
   });
 
@@ -327,6 +342,9 @@ function connectClassroomCardActions() {
     item.addEventListener("click", () => {
       document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
         d.classList.remove("show");
+      });
+      document.querySelectorAll(".classroom-card.menu-open").forEach((c) => {
+        c.classList.remove("menu-open");
       });
     });
   });
@@ -337,7 +355,263 @@ document.addEventListener("click", () => {
   document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
     d.classList.remove("show");
   });
+  document.querySelectorAll(".classroom-card.menu-open").forEach((c) => {
+    c.classList.remove("menu-open");
+  });
 });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".classroom-menu-dropdown.show").forEach((d) => {
+      d.classList.remove("show");
+    });
+    document.querySelectorAll(".classroom-card.menu-open").forEach((c) => {
+      c.classList.remove("menu-open");
+    });
+  }
+});
+
+// ============================================================
+// MATERIALS AWAITING SUBJECT REVIEW
+// ============================================================
+
+let teacherReviewPdfs = [];
+
+async function loadReviewNeededMaterials() {
+  const section = document.getElementById("section-review-needed");
+  const list = document.getElementById("review-needed-list");
+  if (!section || !list) return;
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/pdfs`, { credentials: "include" });
+    if (!res.ok) return;
+    const data = await res.json();
+    const pdfs = data.pdfs || [];
+
+    // Filter documents needing review in teacher's classrooms
+    teacherReviewPdfs = pdfs.filter((p) => p.classificationStatus === "needs_review");
+
+    if (teacherReviewPdfs.length === 0) {
+      section.style.display = "none";
+      list.innerHTML = "";
+      return;
+    }
+
+    section.style.display = "block";
+    list.innerHTML = teacherReviewPdfs.map((pdf) => {
+      const confText = pdf.predictionConfidence ? `${Math.round(pdf.predictionConfidence * 100)}%` : null;
+      return `
+        <div class="review-item-card" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #ffffff; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 220px;">
+            <div style="font-weight: 700; color: #1e293b; font-size: 14px; margin-bottom: 4px; word-break: break-all;">
+              📄 ${escapeHTML(pdf.originalFilename || pdf.filename)}
+            </div>
+            <div style="font-size: 12px; color: #64748b; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+              ${pdf.classroomName ? `<span>🏛 <strong>${escapeHTML(pdf.classroomName)}</strong></span>` : ""}
+              <span style="background: #fef3c7; color: #92400e; padding: 2px 7px; border-radius: 4px; font-weight: 600;">
+                ⚡ Predicted: ${escapeHTML(pdf.predictedSubjectName || "Uncertain")}${confText ? ` (${confText})` : ""}
+              </span>
+            </div>
+          </div>
+          <button type="button" class="btn-action-review amber btn-review-teacher-pdf" data-id="${pdf.id}">
+            ⚡ Review Subject
+          </button>
+        </div>
+      `;
+    }).join("");
+
+    document.querySelectorAll(".btn-review-teacher-pdf").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        openTeacherChangeSubjectModal(btn.dataset.id);
+      });
+    });
+  } catch (err) {
+    console.warn("Could not load review needed materials:", err);
+  }
+}
+
+async function openTeacherChangeSubjectModal(pdfId) {
+  const pdf = teacherReviewPdfs.find((p) => String(p.id) === String(pdfId)) || { id: pdfId };
+  const select = document.getElementById("select-change-subject");
+  const idInput = document.getElementById("change-subject-pdf-id");
+  const nameP = document.getElementById("change-subject-doc-name");
+  const mlBox = document.getElementById("change-subject-ml-box");
+  const mlBadge = document.getElementById("change-subject-ml-badge");
+  const mlDetails = document.getElementById("change-subject-ml-details");
+  const inlineBox = document.getElementById("inline-create-subject-box");
+  const inlineError = document.getElementById("inline-create-error");
+
+  if (idInput) idInput.value = pdf.id;
+  if (nameP) nameP.textContent = pdf.originalFilename || pdf.filename || "Document";
+  if (inlineBox) inlineBox.style.display = "none";
+  if (inlineError) inlineError.style.display = "none";
+
+  if (mlBox && mlBadge && mlDetails) {
+    mlBadge.textContent = "⚡ Needs Review";
+    mlBadge.style.background = "#fef3c7";
+    mlBadge.style.color = "#92400e";
+    mlBadge.style.border = "1px solid #f59e0b";
+    const confPct = pdf.predictionConfidence ? `${Math.round(pdf.predictionConfidence * 100)}%` : null;
+    mlDetails.innerHTML = `Model predicted <strong>${escapeHTML(pdf.predictedSubjectName || "Uncertain")}</strong>${confPct ? ` with <strong>${confPct}</strong> confidence` : ""}, which requires review before assigning. Please select or add the correct subject below.`;
+    mlBox.style.display = "block";
+  }
+
+  // Load classroom subjects
+  try {
+    let classroomSubs = [];
+    if (pdf.classroomId) {
+      const cRes = await fetch(`${API_BASE_URL}/api/classrooms/${pdf.classroomId}`, { credentials: "include" });
+      if (cRes.ok) {
+        const cData = await cRes.json();
+        classroomSubs = cData.subjects || [];
+      }
+    }
+    const mySubRes = await fetch(`${API_BASE_URL}/api/subjects/my-subjects`, { credentials: "include" });
+    let allSubs = [];
+    if (mySubRes.ok) {
+      const mySubData = await mySubRes.json();
+      allSubs = mySubData.subjects || [];
+    }
+
+    let optionsHtml = '<option value="">Choose academic subject...</option>';
+    if (classroomSubs.length > 0) {
+      optionsHtml += `<optgroup label="Classroom Subjects">` +
+        classroomSubs.map((s) => `<option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`).join("") +
+        `</optgroup>`;
+    }
+    const otherSubs = allSubs.filter((s) => !classroomSubs.some((cs) => cs.id === s.id));
+    if (otherSubs.length > 0) {
+      optionsHtml += `<optgroup label="Other Available Subjects">` +
+        otherSubs.map((s) => `<option value="${s.id}" ${pdf.subjectId === s.id ? "selected" : ""}>${escapeHTML(s.name)}${s.code ? ` (${escapeHTML(s.code)})` : ""}</option>`).join("") +
+        `</optgroup>`;
+    }
+    if (select) select.innerHTML = optionsHtml;
+  } catch (err) {
+    console.error("Error loading subjects for review modal:", err);
+  }
+
+  // Toggle inline subject creator
+  const toggleBtn = document.getElementById("btn-toggle-inline-create-subject");
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      if (inlineBox) {
+        inlineBox.style.display = inlineBox.style.display === "none" ? "block" : "none";
+        if (inlineBox.style.display === "block") {
+          document.getElementById("input-inline-subject-name")?.focus();
+        }
+      }
+    };
+  }
+
+  // Wire confirm inline subject creator
+  const confirmBtn = document.getElementById("btn-confirm-inline-create");
+  if (confirmBtn) {
+    confirmBtn.onclick = async () => {
+      const nameInput = document.getElementById("input-inline-subject-name");
+      const subName = nameInput?.value?.trim();
+      if (!subName || subName.length < 2) {
+        if (inlineError) {
+          inlineError.textContent = "Please enter a subject name (min 2 characters).";
+          inlineError.style.display = "block";
+        }
+        return;
+      }
+
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = "Adding...";
+      if (inlineError) inlineError.style.display = "none";
+
+      try {
+        let createUrl = `${API_BASE_URL}/api/subjects/personal`;
+        let createBody = { name: subName };
+        if (pdf.classroomId) {
+          createUrl = `${API_BASE_URL}/api/classrooms/${pdf.classroomId}/subjects`;
+        }
+
+        const res = await fetch(createUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(createBody)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || "Failed to create subject.");
+        }
+
+        const newSub = data.subject || { id: data.id, name: subName };
+        const newOpt = new Option(newSub.name, newSub.id, true, true);
+        select.add(newOpt);
+        select.value = newSub.id;
+
+        if (inlineBox) inlineBox.style.display = "none";
+        if (nameInput) nameInput.value = "";
+        showToast(`Subject "${newSub.name}" added successfully!`);
+      } catch (createErr) {
+        if (inlineError) {
+          inlineError.textContent = createErr.message || "Could not create subject.";
+          inlineError.style.display = "block";
+        }
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Add";
+      }
+    };
+  }
+
+  openModal("modal-change-subject");
+}
+
+function connectTeacherChangeSubjectForm() {
+  const form = document.getElementById("form-change-subject");
+  if (!form) return;
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pdfId = document.getElementById("change-subject-pdf-id")?.value;
+    const subjectId = document.getElementById("select-change-subject")?.value;
+
+    if (!pdfId || !subjectId) {
+      alert("Please select a subject.");
+      return;
+    }
+
+    const submitBtn = document.getElementById("btn-submit-change-subject");
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Saving...";
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/pdfs/${pdfId}/subject`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ subjectId: Number(subjectId) })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.message || "Failed to update subject.");
+        return;
+      }
+
+      closeModal("modal-change-subject");
+      showToast(`Subject assigned as "${data.document?.subjectName || 'assigned'}" successfully!`);
+      await loadClassrooms();
+      await loadReviewNeededMaterials();
+    } catch (err) {
+      console.error("Change subject error:", err);
+      alert("Network error updating subject.");
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Save Subject";
+      }
+    }
+  });
+}
 
 function populateClassroomSelects() {
   const subjectClassSel = document.getElementById("select-subject-classroom");
@@ -783,7 +1057,7 @@ if (uploadResourceForm) {
 
     } catch (err) {
       console.error("Upload error:", err);
-      alert(err.message || "An error occurred during file upload.");
+      alert(err.message || "Failed to upload file. Please check file format and connection.");
     } finally {
       if (submitBtn) {
         submitBtn.disabled = false;
@@ -1023,5 +1297,6 @@ function formatDate(val) {
   return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
 
+connectTeacherChangeSubjectForm();
 loadTeacher();
 })();

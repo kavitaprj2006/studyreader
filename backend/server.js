@@ -2153,10 +2153,10 @@ app.patch("/api/pdfs/:id/subject", requireAuth, async (req, res) => {
       authorized = true;
     } else if (doc.classroom_id) {
       const classCheck = await pool.query(
-        "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2",
-        [doc.classroom_id, req.user.id]
+        "SELECT id, teacher_id FROM classrooms WHERE id = $1",
+        [doc.classroom_id]
       );
-      if (classCheck.rows.length > 0) {
+      if (classCheck.rows.length > 0 && (String(classCheck.rows[0].teacher_id) === String(req.user.id) || req.user.role === "teacher")) {
         authorized = true;
       }
     }
@@ -2178,15 +2178,27 @@ app.patch("/api/pdfs/:id/subject", requireAuth, async (req, res) => {
     }
     const subject = subjectRes.rows[0];
 
+    // If classroom document, ensure link exists in classroom_subjects
+    if (doc.classroom_id) {
+      try {
+        await pool.query(
+          `INSERT INTO classroom_subjects (classroom_id, subject_id, teacher_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [doc.classroom_id, subject.id, req.user.id]
+        );
+      } catch (_) {}
+    }
+
     // Update document with manual subject selection
     const updateRes = await pool.query(
       `UPDATE pdfs
        SET subject_id = $1,
            manually_selected_subject_id = $1,
            classification_source = 'manual',
-           classification_status = 'classified'
+           classification_status = 'manually_assigned'
        WHERE id = $2
-       RETURNING id, subject_id, manually_selected_subject_id, classification_source, classification_status`,
+       RETURNING id, subject_id, manually_selected_subject_id, classification_source, classification_status, predicted_subject_id, prediction_confidence`,
       [subject.id, pdfId]
     );
 
@@ -2199,7 +2211,9 @@ app.patch("/api/pdfs/:id/subject", requireAuth, async (req, res) => {
         subjectName: subject.name,
         manuallySelectedSubjectId: updateRes.rows[0].manually_selected_subject_id,
         classificationSource: updateRes.rows[0].classification_source,
-        classificationStatus: updateRes.rows[0].classification_status
+        classificationStatus: updateRes.rows[0].classification_status,
+        predictedSubjectId: updateRes.rows[0].predicted_subject_id,
+        predictionConfidence: updateRes.rows[0].prediction_confidence
       }
     });
   } catch (error) {
