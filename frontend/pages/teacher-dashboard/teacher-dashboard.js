@@ -615,17 +615,10 @@ if (uploadResourceForm) {
     }
 
     const file = fileInput.files[0];
-    const formData = new FormData();
-    formData.append("pdf", file);
-    if (classroomId) formData.append("classroomId", classroomId);
-    if (subjectId && subjectId !== "auto") {
-      formData.append("subjectId", subjectId);
-      formData.append("autoDetectSubject", "false");
-    } else {
-      formData.append("autoDetectSubject", "true");
+    if (file.size > 25 * 1024 * 1024) {
+      alert("File exceeds the 25MB maximum upload limit.");
+      return;
     }
-    if (category) formData.append("category", category);
-    if (academicYear) formData.append("academicYear", academicYear);
 
     const submitBtn = document.getElementById("btn-submit-upload");
     if (submitBtn) {
@@ -634,46 +627,155 @@ if (uploadResourceForm) {
     }
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/pdfs/upload`, {
-        method: "POST",
-        credentials: "include",
-        body: formData
-      });
+      let uploadedSuccessfully = false;
+      let uploadedDocName = file.name;
 
-      const data = await res.json();
+      // 1. Attempt Direct-to-Cloud Upload (bypasses Vercel 4.5MB serverless payload limit)
+      try {
+        const presignedRes = await fetch(`${API_BASE_URL}/api/storage/presigned-upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type || "application/pdf",
+            classroomId: classroomId || null,
+            subjectId: (subjectId && subjectId !== "auto") ? subjectId : null,
+            category: category || "resource",
+            academicYear: academicYear || null
+          })
+        });
 
-      if (res.status === 409 && data.duplicate) {
-        if (window.StudyReaderDuplicateUpload) {
-          window.StudyReaderDuplicateUpload.show({
-            pendingUpload: data.pendingUpload,
-            existingPdf: data.existingPdf,
-            onSuccess: async () => {
-              closeModal("modal-upload-resource");
-              uploadResourceForm.reset();
-              showToast("Resource replaced / kept successfully!");
-              await loadClassrooms();
-              if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
-                window.StudyReaderNotifications.fetch();
-              }
-            },
-            onCancel: () => {
-              console.log("Duplicate upload canceled.");
+        if (presignedRes.ok) {
+          const presignedData = await presignedRes.json();
+          if (presignedData.success && presignedData.uploadUrl) {
+            const uploadTargetUrl = presignedData.uploadUrl.startsWith("http")
+              ? presignedData.uploadUrl
+              : `${API_BASE_URL}${presignedData.uploadUrl}`;
+
+            const putHeaders = Object.assign({}, presignedData.headers || {});
+            if (!putHeaders["Content-Type"]) {
+              putHeaders["Content-Type"] = file.type || "application/pdf";
             }
-          });
-        } else {
-          alert("A file with this name already exists.");
+
+            const directUploadRes = await fetch(uploadTargetUrl, {
+              method: presignedData.method || "PUT",
+              headers: putHeaders,
+              body: file
+            });
+
+            if (!directUploadRes.ok) {
+              const uploadErrText = await directUploadRes.text().catch(() => "");
+              throw new Error(`Direct cloud storage upload failed (${directUploadRes.status}): ${uploadErrText.slice(0, 100)}`);
+            }
+
+            if (submitBtn) {
+              submitBtn.textContent = "Processing...";
+            }
+
+            const finalizeRes = await fetch(`${API_BASE_URL}/api/storage/finalize-upload`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                pdfId: presignedData.pdfId,
+                storagePath: presignedData.storagePath
+              })
+            });
+
+            let finalizeData = {};
+            try {
+              finalizeData = await finalizeRes.json();
+            } catch (_) {}
+
+            if (!finalizeRes.ok) {
+              throw new Error(finalizeData.message || "Failed to finalize document processing.");
+            }
+
+            uploadedDocName = finalizeData.pdf?.originalFilename || file.name;
+            uploadedSuccessfully = true;
+          }
+        } else if (presignedRes.status === 401 || presignedRes.status === 403) {
+          const errData = await presignedRes.json().catch(() => ({}));
+          alert(errData.message || "You are not authorized to upload to this classroom.");
+          return;
         }
-        return;
+      } catch (directErr) {
+        console.warn("Direct upload fallback triggered:", directErr.message);
+        if (file.size > 4 * 1024 * 1024) {
+          // File is larger than 4MB, direct upload is required because serverless has 4.5MB limit
+          alert(directErr.message || "File upload failed. Please verify your connection and try again.");
+          return;
+        }
       }
 
-      if (!res.ok) {
-        alert(data.message || "Failed to upload file.");
-        return;
+      // 2. Standard multipart upload fallback (for small files if direct upload was skipped)
+      if (!uploadedSuccessfully) {
+        const formData = new FormData();
+        formData.append("pdf", file);
+        if (classroomId) formData.append("classroomId", classroomId);
+        if (subjectId && subjectId !== "auto") {
+          formData.append("subjectId", subjectId);
+          formData.append("autoDetectSubject", "false");
+        } else {
+          formData.append("autoDetectSubject", "true");
+        }
+        if (category) formData.append("category", category);
+        if (academicYear) formData.append("academicYear", academicYear);
+
+        const res = await fetch(`${API_BASE_URL}/api/pdfs/upload`, {
+          method: "POST",
+          credentials: "include",
+          body: formData
+        });
+
+        let data;
+        const resContentType = res.headers.get("content-type");
+        if (resContentType && resContentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          if (res.status === 413 || text.includes("FUNCTION_PAYLOAD_TOO_LARGE") || text.includes("Payload Too Large")) {
+            throw new Error("File exceeds serverless payload size limit (4.5MB). Please use direct upload.");
+          }
+          throw new Error(`Upload failed (${res.status}): ${text.slice(0, 100)}`);
+        }
+
+        if (res.status === 409 && data.duplicate) {
+          if (window.StudyReaderDuplicateUpload) {
+            window.StudyReaderDuplicateUpload.show({
+              pendingUpload: data.pendingUpload,
+              existingPdf: data.existingPdf,
+              onSuccess: async () => {
+                closeModal("modal-upload-resource");
+                uploadResourceForm.reset();
+                showToast("Resource replaced / kept successfully!");
+                await loadClassrooms();
+                if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
+                  window.StudyReaderNotifications.fetch();
+                }
+              },
+              onCancel: () => {
+                console.log("Duplicate upload canceled.");
+              }
+            });
+          } else {
+            alert("A file with this name already exists.");
+          }
+          return;
+        }
+
+        if (!res.ok) {
+          alert(data.message || "Failed to upload file.");
+          return;
+        }
+
+        uploadedDocName = data.pdf?.originalFilename || file.name;
       }
 
       closeModal("modal-upload-resource");
       uploadResourceForm.reset();
-      showToast(`Published '${data.pdf.originalFilename}' successfully!`);
+      showToast(`Published '${uploadedDocName}' successfully!`);
       await loadClassrooms();
       if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
         window.StudyReaderNotifications.fetch();
@@ -681,7 +783,7 @@ if (uploadResourceForm) {
 
     } catch (err) {
       console.error("Upload error:", err);
-      alert("An error occurred during file upload.");
+      alert(err.message || "An error occurred during file upload.");
     } finally {
       if (submitBtn) {
         submitBtn.disabled = false;

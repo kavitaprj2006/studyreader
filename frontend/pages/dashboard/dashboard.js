@@ -463,10 +463,11 @@ if (uploadStudentDocForm) {
       return;
     }
 
-    const formData = new FormData();
-    formData.append("pdf", fileInput.files[0]);
-    if (subjectId) formData.append("subjectId", subjectId);
-    if (category) formData.append("category", category);
+    const file = fileInput.files[0];
+    if (file.size > 25 * 1024 * 1024) {
+      alert("File exceeds the 25MB maximum upload limit.");
+      return;
+    }
 
     const btn = document.getElementById("btn-submit-student-upload");
     if (btn) {
@@ -475,40 +476,135 @@ if (uploadStudentDocForm) {
     }
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/pdfs/upload`, {
-        method: "POST",
-        credentials: "include",
-        body: formData
-      });
+      let uploadedSuccessfully = false;
+      let uploadedDocName = file.name;
 
-      const data = await res.json();
+      // 1. Attempt Direct-to-Cloud Upload
+      try {
+        const presignedRes = await fetch(`${API_BASE_URL}/api/storage/presigned-upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type || "application/pdf",
+            subjectId: (subjectId && subjectId !== "auto") ? subjectId : null,
+            category: category || "notes"
+          })
+        });
 
-      if (res.status === 409 && data.duplicate) {
-        if (window.StudyReaderDuplicateUpload) {
-          window.StudyReaderDuplicateUpload.show({
-            pendingUpload: data.pendingUpload,
-            existingPdf: data.existingPdf,
-            onSuccess: async () => {
-              closeModal("modal-upload-student-doc");
-              uploadStudentDocForm.reset();
-              showToast("Uploaded successfully!");
-              await loadDashboardData();
+        if (presignedRes.ok) {
+          const presignedData = await presignedRes.json();
+          if (presignedData.success && presignedData.uploadUrl) {
+            const uploadTargetUrl = presignedData.uploadUrl.startsWith("http")
+              ? presignedData.uploadUrl
+              : `${API_BASE_URL}${presignedData.uploadUrl}`;
+
+            const putHeaders = Object.assign({}, presignedData.headers || {});
+            if (!putHeaders["Content-Type"]) {
+              putHeaders["Content-Type"] = file.type || "application/pdf";
             }
-          });
-        } else {
-          alert("File already exists.");
+
+            const directUploadRes = await fetch(uploadTargetUrl, {
+              method: presignedData.method || "PUT",
+              headers: putHeaders,
+              body: file
+            });
+
+            if (!directUploadRes.ok) {
+              const uploadErrText = await directUploadRes.text().catch(() => "");
+              throw new Error(`Direct cloud storage upload failed (${directUploadRes.status}): ${uploadErrText.slice(0, 100)}`);
+            }
+
+            if (btn) {
+              btn.textContent = "Processing...";
+            }
+
+            const finalizeRes = await fetch(`${API_BASE_URL}/api/storage/finalize-upload`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                pdfId: presignedData.pdfId,
+                storagePath: presignedData.storagePath
+              })
+            });
+
+            let finalizeData = {};
+            try {
+              finalizeData = await finalizeRes.json();
+            } catch (_) {}
+
+            if (!finalizeRes.ok) {
+              throw new Error(finalizeData.message || "Failed to finalize document processing.");
+            }
+
+            uploadedDocName = finalizeData.pdf?.originalFilename || file.name;
+            uploadedSuccessfully = true;
+          }
         }
-        return;
+      } catch (directErr) {
+        console.warn("Direct upload fallback triggered:", directErr.message);
+        if (file.size > 4 * 1024 * 1024) {
+          alert(directErr.message || "File upload failed. Please verify your connection and try again.");
+          return;
+        }
       }
 
-      if (!res.ok) {
-        alert(data.message || "Failed to upload document.");
-        return;
+      // 2. Standard multipart upload fallback
+      if (!uploadedSuccessfully) {
+        const formData = new FormData();
+        formData.append("pdf", file);
+        if (subjectId) formData.append("subjectId", subjectId);
+        if (category) formData.append("category", category);
+
+        const res = await fetch(`${API_BASE_URL}/api/pdfs/upload`, {
+          method: "POST",
+          credentials: "include",
+          body: formData
+        });
+
+        let data;
+        const resContentType = res.headers.get("content-type");
+        if (resContentType && resContentType.includes("application/json")) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          if (res.status === 413 || text.includes("FUNCTION_PAYLOAD_TOO_LARGE") || text.includes("Payload Too Large")) {
+            throw new Error("File exceeds serverless payload size limit (4.5MB). Please use direct upload.");
+          }
+          throw new Error(`Upload failed (${res.status}): ${text.slice(0, 100)}`);
+        }
+
+        if (res.status === 409 && data.duplicate) {
+          if (window.StudyReaderDuplicateUpload) {
+            window.StudyReaderDuplicateUpload.show({
+              pendingUpload: data.pendingUpload,
+              existingPdf: data.existingPdf,
+              onSuccess: async () => {
+                closeModal("modal-upload-student-doc");
+                uploadStudentDocForm.reset();
+                showToast("Uploaded successfully!");
+                await loadDashboardData();
+              }
+            });
+          } else {
+            alert("File already exists.");
+          }
+          return;
+        }
+
+        if (!res.ok) {
+          alert(data.message || "Failed to upload document.");
+          return;
+        }
+
+        uploadedDocName = data.pdf?.originalFilename || file.name;
       }
 
       closeModal("modal-upload-student-doc");
       uploadStudentDocForm.reset();
-      showToast(`Uploaded '${data.pdf.originalFilename}'!`);
+      showToast(`Uploaded '${uploadedDocName}'!`);
       await loadDashboardData();
       if (window.StudyReaderNotifications && typeof window.StudyReaderNotifications.fetch === "function") {
         window.StudyReaderNotifications.fetch();
@@ -516,7 +612,7 @@ if (uploadStudentDocForm) {
 
     } catch (err) {
       console.error("Upload error:", err);
-      alert("An error occurred while uploading.");
+      alert(err.message || "An error occurred while uploading.");
     } finally {
       if (btn) {
         btn.disabled = false;

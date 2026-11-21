@@ -2347,16 +2347,16 @@ app.post("/api/storage/presigned-upload", requireAuth, async (req, res) => {
     if (classroomId) {
       if (req.user.role === "teacher") {
         const check = await pool.query(
-          "SELECT id FROM classrooms WHERE id = $1 AND teacher_id = $2 AND is_archived = FALSE",
-          [classroomId, req.user.id]
+          "SELECT id, teacher_id FROM classrooms WHERE id = $1 AND is_archived = FALSE",
+          [Number(classroomId)]
         );
-        if (check.rows.length === 0) {
+        if (check.rows.length === 0 || (String(check.rows[0].teacher_id) !== String(req.user.id) && req.user.role !== "admin")) {
           return res.status(403).json({ success: false, message: "You are not authorized to upload to this classroom." });
         }
       } else if (req.user.role === "student") {
         const check = await pool.query(
           "SELECT 1 FROM classroom_members WHERE classroom_id = $1 AND student_id = $2",
-          [classroomId, req.user.id]
+          [Number(classroomId), req.user.id]
         );
         if (check.rows.length === 0) {
           return res.status(403).json({ success: false, message: "You are not enrolled in this classroom." });
@@ -2369,28 +2369,32 @@ app.post("/api/storage/presigned-upload", requireAuth, async (req, res) => {
     const storagePath = `documents/${req.user.id}/${uniqueFilename}`;
 
     const accessScope = classroomId ? "classroom" : "private";
+    const parsedSubjectId = (subjectId && subjectId !== "auto" && !isNaN(Number(subjectId))) ? Number(subjectId) : null;
+    const classificationSource = parsedSubjectId ? "manual" : "unclassified";
 
     const insertRes = await pool.query(
       `INSERT INTO pdfs (
          user_id, filename, original_filename, file_url, file_size,
          processing_status, classroom_id, subject_id, category,
-         academic_year, semester, storage_provider, storage_path, mime_type, access_scope
-       ) VALUES ($1, $2, $3, $4, 0, 'uploaded', $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         academic_year, semester, storage_provider, storage_path, mime_type, access_scope,
+         classification_source, classification_status, manually_selected_subject_id
+       ) VALUES ($1, $2, $3, 'pending', 0, 'uploaded', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'unclassified', $14)
        RETURNING id, filename, original_filename, storage_path`,
       [
         req.user.id,
         uniqueFilename,
         filename,
-        storagePath,
         classroomId ? Number(classroomId) : null,
-        subjectId ? Number(subjectId) : null,
+        parsedSubjectId,
         category,
         academicYear || null,
         semester || null,
         cloudStorage.getStorageProviderName(),
         storagePath,
         contentType,
-        accessScope
+        accessScope,
+        classificationSource,
+        parsedSubjectId
       ]
     );
 
@@ -2453,7 +2457,7 @@ app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
     }
 
     const pdfCheck = await pool.query(
-      "SELECT id, storage_path, user_id FROM pdfs WHERE id = $1",
+      "SELECT id, storage_path, user_id, classroom_id, original_filename, filename FROM pdfs WHERE id = $1",
       [pdfId]
     );
     if (pdfCheck.rows.length === 0) {
@@ -2472,18 +2476,38 @@ app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
     }
 
     await pool.query(
-      "UPDATE pdfs SET file_size = $1, processing_status = 'uploaded', updated_at = NOW() WHERE id = $2",
-      [head.size, pdfId]
+      "UPDATE pdfs SET file_size = $1, file_url = $2, processing_status = 'uploaded', updated_at = NOW() WHERE id = $3",
+      [head.size, `/api/pdfs/${pdfId}/file`, pdfId]
     );
 
     const job = await jobProcessor.enqueueJob(pdfId, "process_document");
+
+    await logAnalyticsEvent(req.user.id, "document_uploaded", "pdfs", pdfId, {
+      filename: pdf.original_filename || pdf.filename,
+      fileSize: head.size,
+      storageProvider: cloudStorage.getStorageProviderName()
+    });
+
+    if (pdf.classroom_id) {
+      try {
+        await notifyClassroomStudents({
+          classroomId: Number(pdf.classroom_id),
+          resourceId: Number(pdfId),
+          resourceTitle: pdf.original_filename || pdf.filename,
+          teacherId: req.user.id,
+          type: "resource_uploaded"
+        });
+      } catch (notifErr) {
+        console.warn("[Finalize] Could not broadcast student notifications:", notifErr.message);
+      }
+    }
 
     // In serverless environments (or when requested), attempt immediate processing within bounded budget
     if (req.query.processNow === "true" || process.env.VERCEL) {
       try {
         await Promise.race([
           jobProcessor.processOne(),
-          new Promise((resolve) => setTimeout(() => resolve(false), 7000))
+          new Promise((resolve) => setTimeout(() => resolve(false), 8000))
         ]);
       } catch (procErr) {
         console.log("[Finalize] Inline processing deferred to queue:", procErr.message);
@@ -2493,7 +2517,14 @@ app.post("/api/storage/finalize-upload", requireAuth, async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Document upload finalized and enqueued for processing.",
-      pdfId,
+      pdf: {
+        id: pdf.id,
+        filename: pdf.filename,
+        originalFilename: pdf.original_filename || pdf.filename,
+        fileUrl: `/api/pdfs/${pdf.id}/file`,
+        fileSize: head.size,
+        processingStatus: "uploaded"
+      },
       jobId: job.id,
       fileSize: head.size
     });
