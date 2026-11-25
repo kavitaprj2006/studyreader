@@ -1580,8 +1580,16 @@ async function handleStudyTool(tool) {
       documentAiPanel.style.display = "none";
     }
     if (window.StudyReaderListenPlayer && currentPdfId) {
+      let clientSections = [];
+      try {
+        if (currentDocumentType === "pdf") {
+          clientSections = await getPdfReadingSections();
+        }
+      } catch (_) {}
+
       window.StudyReaderListenPlayer.init({
         documentId: currentPdfId,
+        sections: clientSections,
         onPageChange: (targetPage) => {
           if (targetPage >= 1 && targetPage <= totalPages && targetPage !== currentPage) {
             goToPage(targetPage);

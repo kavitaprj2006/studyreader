@@ -46,12 +46,41 @@
       this.documentId = options.documentId;
       this.onPageChangeCallback = options.onPageChange || null;
 
+      // If client sections are provided, use them as instant fallback
+      if (Array.isArray(options.sections) && options.sections.length > 0) {
+        this.setFallbackBlocksFromSections(options.sections);
+      }
+
       this.renderPlayerUI();
       this.bindAudioEvents();
       this.loadVoices();
       this.loadDocumentBlocks();
       this.checkSmartResume();
       this.bindClickToListen();
+    }
+
+    /**
+     * Converts client sections into instant reading blocks so the player
+     * is playable immediately without waiting for server block analysis.
+     */
+    setFallbackBlocksFromSections(sections) {
+      if (!Array.isArray(sections) || sections.length === 0) return;
+      this.blocks = sections.map((sec, idx) => {
+        const rawText = sec.text || "";
+        const sentences = (rawText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [rawText])
+          .map(s => s.trim())
+          .filter(Boolean)
+          .map(s => ({ raw: s, spoken: s }));
+
+        return {
+          blockId: `client_sec_${idx}`,
+          pageNumber: idx + 1,
+          title: sec.label || `Page ${idx + 1}`,
+          rawText,
+          spokenText: rawText,
+          sentences: sentences.length > 0 ? sentences : [{ raw: rawText || "Page content", spoken: rawText || "Page content" }]
+        };
+      });
     }
 
     /**
@@ -305,42 +334,72 @@
     }
 
     /**
-     * Fetches all available voices from the backend.
+     * Fetches all available voices from the backend and device speech synthesis.
      */
     async loadVoices() {
+      let serverVoices = [];
       try {
         const res = await fetch(`${API_BASE_URL}/api/listen/voices`, { credentials: "include" });
-        if (!res.ok) return;
-        const data = await res.json();
-        const voices = data.voices || [];
+        if (res.ok) {
+          const data = await res.json();
+          serverVoices = data.voices || [];
+        }
+      } catch (err) {
+        console.warn("[ListenPlayer] Could not fetch server voices:", err.message);
+      }
 
-        const sel = this.elements.selectVoice;
-        sel.innerHTML = "";
+      const sel = this.elements.selectVoice;
+      sel.innerHTML = "";
 
-        // Server neural studio voices first
-        const cfGroup = document.createElement("optgroup");
-        cfGroup.label = "Studio Neural Voices (Cloudflare)";
+      // Server neural studio voices first
+      const cfGroup = document.createElement("optgroup");
+      cfGroup.label = "Studio Neural Voices (Cloudflare)";
 
-        const browserGroup = document.createElement("optgroup");
-        browserGroup.label = "Device / Browser Voices";
+      const browserGroup = document.createElement("optgroup");
+      browserGroup.label = "Device / Browser Voices";
 
-        voices.forEach(v => {
-          const opt = document.createElement("option");
-          opt.value = v.id;
-          opt.textContent = `${v.label} ${v.isStudio ? "✦" : ""}`;
-          if (v.provider === "cloudflare" || v.provider === "google") {
-            cfGroup.appendChild(opt);
-          } else {
+      serverVoices.forEach(v => {
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        const displayName = v.name || v.label || v.id;
+        opt.textContent = `${displayName}${v.isStudio ? " ✦" : ""}`;
+        if (v.provider === "cloudflare" || v.provider === "google" || v.id.startsWith("cf:") || v.id.startsWith("gcp:")) {
+          cfGroup.appendChild(opt);
+        } else {
+          browserGroup.appendChild(opt);
+        }
+      });
+
+      // Also dynamically populate device SpeechSynthesis voices
+      if ("speechSynthesis" in window) {
+        const localVoices = window.speechSynthesis.getVoices() || [];
+        localVoices.forEach(lv => {
+          const id = `browser:${lv.name}`;
+          if (!browserGroup.querySelector(`option[value="${id}"]`)) {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = `${lv.name} (${lv.lang})`;
             browserGroup.appendChild(opt);
           }
         });
 
-        if (cfGroup.children.length > 0) sel.appendChild(cfGroup);
-        if (browserGroup.children.length > 0) sel.appendChild(browserGroup);
+        // Listen for async voice loading on Chrome/Safari/Edge
+        if (localVoices.length === 0 && !this._voicesBound) {
+          this._voicesBound = true;
+          window.speechSynthesis.onvoiceschanged = () => {
+            this.loadVoices();
+          };
+        }
+      }
 
-        if (this.voiceId) sel.value = this.voiceId;
-      } catch (err) {
-        console.warn("[ListenPlayer] Could not fetch server voices:", err.message);
+      if (cfGroup.children.length > 0) sel.appendChild(cfGroup);
+      if (browserGroup.children.length > 0) sel.appendChild(browserGroup);
+
+      if (this.voiceId && sel.querySelector(`option[value="${this.voiceId}"]`)) {
+        sel.value = this.voiceId;
+      } else if (sel.options.length > 0) {
+        sel.selectedIndex = 0;
+        this.voiceId = sel.value;
       }
     }
 
@@ -351,7 +410,9 @@
       if (!this.documentId) return;
 
       try {
-        this.elements.blockLabel.textContent = "Analyzing document structure...";
+        if (!this.blocks.length) {
+          this.elements.blockLabel.textContent = "Analyzing document structure...";
+        }
         const res = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(this.documentId)}/blocks`, {
           credentials: "include"
         });
@@ -359,17 +420,18 @@
         if (!res.ok) throw new Error("Unable to fetch reading blocks");
         const data = await res.json();
 
-        this.blocks = data.blocks || [];
-        this.elements.docTitle.textContent = `🎧 ${data.title || "Study Document"}`;
-
-        if (this.blocks.length > 0) {
+        if (data.blocks && data.blocks.length > 0) {
+          this.blocks = data.blocks;
+          this.elements.docTitle.textContent = `🎧 ${data.title || "Study Document"}`;
           this.updateBlockUI();
-        } else {
-          this.elements.blockLabel.textContent = "No readable speech blocks found.";
+        } else if (!this.blocks.length) {
+          this.elements.blockLabel.textContent = "Ready for playback";
         }
       } catch (err) {
-        console.warn("[ListenPlayer] Block loading fallback:", err.message);
-        this.elements.blockLabel.textContent = "Ready for playback";
+        console.warn("[ListenPlayer] Block loading notice:", err.message);
+        if (!this.blocks.length) {
+          this.elements.blockLabel.textContent = "Ready for playback";
+        }
       }
     }
 
