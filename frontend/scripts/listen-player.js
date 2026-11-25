@@ -65,7 +65,10 @@
      */
     setFallbackBlocksFromSections(sections) {
       if (!Array.isArray(sections) || sections.length === 0) return;
-      this.blocks = sections.map((sec, idx) => {
+      const validSections = sections.filter(sec => sec && (sec.text || "").trim().length > 0);
+      if (validSections.length === 0) return;
+
+      this.blocks = validSections.map((sec, idx) => {
         const rawText = sec.text || "";
         const sentences = (rawText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [rawText])
           .map(s => s.trim())
@@ -74,7 +77,7 @@
 
         return {
           blockId: `client_sec_${idx}`,
-          pageNumber: idx + 1,
+          pageNumber: sec.pageNumber || idx + 1,
           title: sec.label || `Page ${idx + 1}`,
           rawText,
           spokenText: rawText,
@@ -410,6 +413,7 @@
       if (!this.documentId) return;
 
       try {
+        this.isLoadingBlocks = true;
         if (!this.blocks.length) {
           this.elements.blockLabel.textContent = "Analyzing document structure...";
         }
@@ -424,6 +428,10 @@
           this.blocks = data.blocks;
           this.elements.docTitle.textContent = `🎧 ${data.title || "Study Document"}`;
           this.updateBlockUI();
+          if (this.playWhenReady) {
+            this.playWhenReady = false;
+            this.play();
+          }
         } else if (!this.blocks.length) {
           this.elements.blockLabel.textContent = "Ready for playback";
         }
@@ -432,6 +440,8 @@
         if (!this.blocks.length) {
           this.elements.blockLabel.textContent = "Ready for playback";
         }
+      } finally {
+        this.isLoadingBlocks = false;
       }
     }
 
@@ -470,12 +480,47 @@
      */
     async play() {
       if (this.isPaused && this.audio.src) {
-        await this.audio.play();
-        this.isPlaying = true;
-        this.isPaused = false;
-        this.elements.btnPlayToggle.textContent = "⏸";
-        this.highlightCurrentSentence();
+        try {
+          await this.audio.play();
+          this.isPlaying = true;
+          this.isPaused = false;
+          this.elements.btnPlayToggle.textContent = "⏸";
+          this.highlightCurrentSentence();
+          return;
+        } catch (e) {
+          console.warn("[ListenPlayer] Resume failed, replaying sentence:", e);
+        }
+      }
+
+      if (this.isLoadingBlocks) {
+        this.playWhenReady = true;
+        this.elements.blockLabel.textContent = "⏳ Loading reading blocks...";
         return;
+      }
+
+      if (!this.blocks || this.blocks.length === 0) {
+        this.playWhenReady = true;
+        this.elements.blockLabel.textContent = "⏳ Loading document audio...";
+        await this.loadDocumentBlocks();
+        if (!this.blocks || this.blocks.length === 0) {
+          this.elements.blockLabel.textContent = "⚠️ No readable text found for speech synthesis.";
+          this.playWhenReady = false;
+          return;
+        }
+      }
+
+      // If current block has no valid spoken text, find the first playable block
+      let currBlock = this.blocks[this.currentBlockIndex];
+      let currSpoken = currBlock?.sentences?.[this.currentSentenceIndex]?.spoken || currBlock?.spokenText || currBlock?.rawText;
+      if (!currBlock || !currSpoken || !currSpoken.trim()) {
+        const validIdx = this.blocks.findIndex(b => {
+          const t = b.spokenText || b.rawText || (b.sentences && b.sentences[0] && (b.sentences[0].spoken || b.sentences[0].raw));
+          return t && t.trim().length > 0;
+        });
+        if (validIdx !== -1) {
+          this.currentBlockIndex = validIdx;
+          this.currentSentenceIndex = 0;
+        }
       }
 
       await this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
@@ -576,7 +621,16 @@
 
       const sentenceObj = block.sentences?.[sentenceIndex];
       const spokenText = sentenceObj?.spoken || sentenceObj?.raw || block.spokenText || block.rawText;
-      if (!spokenText) return;
+      if (!spokenText || !spokenText.trim()) {
+        if (sentenceIndex + 1 < (block.sentences?.length || 0)) {
+          return this.playSentence(blockIndex, sentenceIndex + 1);
+        } else if (blockIndex + 1 < this.blocks.length) {
+          return this.playSentence(blockIndex + 1, 0);
+        } else {
+          this.stop();
+          return;
+        }
+      }
 
       this.isPlaying = true;
       this.isPaused = false;
@@ -631,30 +685,59 @@
      */
     speakWithBrowserVoice(text) {
       return new Promise((resolve) => {
-        if (!("speechSynthesis" in window)) {
+        if (!("speechSynthesis" in window) || !text || !text.trim()) {
           resolve();
           return;
         }
 
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = this.speed;
+        try {
+          window.speechSynthesis.cancel();
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+        } catch (_) {}
+
+        const utterance = new SpeechSynthesisUtterance(text.trim());
+        utterance.rate = this.speed || 1.0;
+
+        if (this.voiceId && this.voiceId.startsWith("browser:")) {
+          const voiceName = this.voiceId.replace("browser:", "");
+          const voices = window.speechSynthesis.getVoices() || [];
+          const matchedVoice = voices.find(v => v.name === voiceName || v.voiceURI === voiceName);
+          if (matchedVoice) {
+            utterance.voice = matchedVoice;
+            utterance.lang = matchedVoice.lang;
+          }
+        }
 
         utterance.onend = () => {
           this.currentUtterance = null;
+          window._activeSpeechUtterance = null;
           if (this.isPlaying && !this.isPaused) {
             this.nextSentence();
           }
           resolve();
         };
 
-        utterance.onerror = () => {
+        utterance.onerror = (err) => {
+          console.warn("[ListenPlayer] Speech synthesis error:", err);
           this.currentUtterance = null;
+          window._activeSpeechUtterance = null;
           resolve();
         };
 
         this.currentUtterance = utterance;
-        window.speechSynthesis.speak(utterance);
+        window._activeSpeechUtterance = utterance;
+
+        try {
+          window.speechSynthesis.speak(utterance);
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+        } catch (e) {
+          console.warn("[ListenPlayer] Failed to invoke speech synthesis:", e);
+          resolve();
+        }
       });
     }
 

@@ -1579,6 +1579,10 @@ async function handleStudyTool(tool) {
       documentAiPanel.hidden = true;
       documentAiPanel.style.display = "none";
     }
+    if (readAloudPanel) {
+      readAloudPanel.hidden = true;
+      readAloudPanel.style.display = "none";
+    }
     if (window.StudyReaderListenPlayer && currentPdfId) {
       let clientSections = [];
       try {

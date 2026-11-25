@@ -49,27 +49,60 @@ function createListenRouter({ pool, cloudStorage, canAccessDocument, requireAuth
       const userOverrides = {};
       pronRes.rows.forEach(r => { userOverrides[r.term] = r.phonetic_spoken; });
 
-      // Extract document text using documentProcessor
-      const { filePath, isTemp } = await getDocumentLocalPath(document);
-      let extracted;
-      try {
-        extracted = await documentProcessor.extractDocument(filePath, document.original_filename || document.filename);
-      } finally {
-        if (isTemp && require("fs").existsSync(filePath)) {
-          try { require("fs").unlinkSync(filePath); } catch (_) {}
+      // Fast-path: Check if document chunks are already stored in database (from JobProcessor/OCR)
+      const chunksRes = await pool.query(
+        "SELECT page_number, chunk_text, chunk_index FROM pdf_chunks WHERE pdf_id = $1 ORDER BY chunk_index ASC",
+        [document.id]
+      );
+
+      let sections = [];
+      let fileType = "pdf";
+      let pageCount = 1;
+
+      if (chunksRes.rows && chunksRes.rows.length > 0) {
+        const pageMap = new Map();
+        chunksRes.rows.forEach(c => {
+          const p = c.page_number || 1;
+          if (!pageMap.has(p)) pageMap.set(p, []);
+          if (c.chunk_text && c.chunk_text.trim()) {
+            pageMap.get(p).push(c.chunk_text.trim());
+          }
+        });
+        for (const [pageNum, textArr] of pageMap.entries()) {
+          sections.push({
+            pageNumber: pageNum,
+            title: `Page ${pageNum}`,
+            text: textArr.join("\n\n")
+          });
         }
+        pageCount = sections.length;
+      }
+
+      // Fallback: If no stored chunks, extract document text using documentProcessor
+      if (sections.length === 0) {
+        const { filePath, isTemp } = await getDocumentLocalPath(document);
+        let extracted;
+        try {
+          extracted = await documentProcessor.extractDocument(filePath, document.original_filename || document.filename);
+        } finally {
+          if (isTemp && require("fs").existsSync(filePath)) {
+            try { require("fs").unlinkSync(filePath); } catch (_) {}
+          }
+        }
+        sections = extracted.sections || [];
+        fileType = extracted.fileType || "pdf";
+        pageCount = extracted.pageCount || sections.length || 1;
       }
 
       // Generate structured reading blocks
-      const sections = extracted.sections || [];
       const blocks = textNormalizer.createReadingBlocks(sections, `doc_${document.id}`, userOverrides);
 
       return res.status(200).json({
         success: true,
         documentId: document.id,
         title: document.original_filename || document.filename,
-        fileType: extracted.fileType,
-        pageCount: extracted.pageCount || sections.length || 1,
+        fileType,
+        pageCount,
         totalBlocks: blocks.length,
         blocks
       });
