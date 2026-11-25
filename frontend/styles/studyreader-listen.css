@@ -19,6 +19,15 @@
   border-bottom: 1px dashed #6366f1 !important;
 }
 
+.textLayer span.listen-highlight-word,
+span.listen-highlight-word {
+  background: #fde047 !important;
+  color: #713f12 !important;
+  border-bottom: 2px solid #ca8a04 !important;
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(234, 179, 8, 0.75);
+}
+
 /* DOCX & PPTX Card Highlighting */
 .docx-section-block.listen-active-section,
 .pptx-slide-card.listen-active-section {
@@ -38,24 +47,25 @@
 /* 2. Floating / Docked Listen Player Bar */
 .studyreader-listen-bar {
   position: sticky;
-  bottom: 16px;
+  bottom: 12px;
   left: 0;
   right: 0;
   margin: 0 auto;
-  max-width: 900px;
-  width: calc(100% - 32px);
-  background: rgba(255, 255, 255, 0.94);
+  max-width: 820px;
+  width: calc(100% - 24px);
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(203, 213, 225, 0.85);
+  border: 1px solid rgba(203, 213, 225, 0.9);
   border-radius: 16px;
   box-shadow: 0 12px 36px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.04);
-  padding: 14px 20px;
-  z-index: 100;
+  padding: 12px 18px;
+  z-index: 90;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  gap: 8px;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .studyreader-listen-bar.minimized {
@@ -68,7 +78,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .listen-track-info {
@@ -80,7 +90,7 @@
 }
 
 .listen-track-title {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
   color: #0f172a;
   white-space: nowrap;
@@ -89,6 +99,28 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.listen-page-nav-btn {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.listen-page-nav-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 .listen-badge {
@@ -103,7 +135,7 @@
 #select-listen-page {
   font-size: 11.5px;
   font-weight: 700;
-  padding: 3px 8px;
+  padding: 2px 6px;
   border-radius: 9999px;
   background: #e0e7ff;
   color: #4338ca;
@@ -117,38 +149,19 @@
   background: #c7d2fe;
 }
 
-.listen-transport-controls .listen-pill-btn {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 4px 10px;
-  height: 32px;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-  border-radius: 9999px;
-  cursor: pointer;
-  color: #334155;
-  transition: all 0.15s ease;
-}
-
-.listen-transport-controls .listen-pill-btn:hover {
-  background: #e2e8f0;
-  color: #0f172a;
-}
-
-.listen-track-subtitle {
-  font-size: 11.5px;
-  color: #64748b;
+.listen-transport-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  width: 100%;
 }
 
-/* Main Transport Buttons */
 .listen-transport-controls {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .listen-btn {
@@ -191,6 +204,27 @@
   background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
   color: #ffffff;
   box-shadow: 0 6px 16px rgba(79, 70, 229, 0.45);
+}
+
+#btn-listen-continue-page {
+  animation: listenPulse 2s infinite ease-in-out;
+}
+
+@keyframes listenPulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.4); }
+  70% { transform: scale(1.03); box-shadow: 0 0 0 8px rgba(79, 70, 229, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
+}
+
+.listen-track-subtitle {
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Progress Slider & Time */
@@ -322,23 +356,24 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 4. Bookmarks & Notes Drawer Modal */
+/* 4. Bookmarks & Notes Drawer Modal (Pop-up above bar, non-intrusive) */
 .listen-drawer {
-  position: fixed;
-  right: -380px;
-  top: 0;
-  bottom: 0;
-  width: 360px;
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 12px;
+  width: 320px;
+  max-height: 280px;
   background: #ffffff;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
-  z-index: 1000;
-  display: flex;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  z-index: 250;
   flex-direction: column;
-  transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .listen-drawer.open {
-  right: 0;
+  display: flex !important;
 }
 
 .listen-drawer-head {

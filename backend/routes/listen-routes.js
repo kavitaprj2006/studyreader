@@ -167,7 +167,12 @@ function createListenRouter({ pool, cloudStorage, canAccessDocument, requireAuth
 
     } catch (err) {
       console.error("[ListenAPI] Synthesis error:", err);
-      return res.status(500).json({ success: false, message: err.message || "Speech synthesis failed." });
+      return res.status(200).json({
+        success: true,
+        useClientSynthesis: true,
+        normalizedText: text,
+        fallbackReason: err.message || "Speech synthesis provider unavailable."
+      });
     }
   });
 

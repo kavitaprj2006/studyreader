@@ -4,9 +4,12 @@
  * Features:
  * - Neural voice synthesis (Cloudflare Deepgram Aura-2) with fallback to Browser SpeechSynthesis
  * - Synchronized PDF/DOCX/PPTX sentence highlighting (Follow Along)
+ * - Real-time word-level pointing while speaking (Follow Along word tracking)
+ * - Sentence-to-sentence background audio prefetch (< 1s pause between lines)
+ * - Page-wise listening with manual Continue button boundary control
  * - Click-to-listen navigation
  * - Smart Resume across sessions
- * - Bookmarks & Notes
+ * - Bookmarks & Notes drawer (non-intrusive popover above bar)
  * - Sleep timer & Focus mode
  * - Speed (0.75x - 2x) & Seek (±15s)
  */
@@ -33,10 +36,15 @@
       this.audio = new Audio();
       this.audio.preload = "auto";
       this.currentUtterance = null;
+      this.audioPreloadCache = new Map();
+      this.currentAbortController = null;
+      this.nextPendingPageNum = null;
+      this.sentencePauseTimer = null;
 
       this.elements = {};
       this.onPageChangeCallback = null;
       this.historyLoaded = false;
+      this._voicesBound = false;
     }
 
     /**
@@ -99,60 +107,64 @@
       container.className = "studyreader-listen-bar";
 
       container.innerHTML = `
-        <!-- Top Meta Row -->
+        <!-- Row 1: Document Info & Page Switcher & Actions -->
         <div class="listen-bar-header">
           <div class="listen-track-info">
             <div class="listen-track-title">
               <span id="listen-doc-title">🎧 StudyReader Listen</span>
+              <button type="button" id="btn-listen-prev-page" class="listen-page-nav-btn" title="Previous Page">‹</button>
               <select id="select-listen-page" class="listen-badge" style="cursor: pointer; border: 1px solid #c7d2fe; outline: none; background: #eef2ff; color: #4338ca; padding: 2px 8px; font-weight: 700;" title="Choose page to read">
                 <option value="1">Page 1</option>
               </select>
+              <button type="button" id="btn-listen-next-page" class="listen-page-nav-btn" title="Next Page">›</button>
             </div>
             <div class="listen-track-subtitle">
               <span id="listen-block-label">Loading natural reading blocks...</span>
-              <span id="listen-sleep-badge" style="display: none; color: #f59e0b; font-weight: 700;">⏱ 00:00</span>
+              <span id="listen-sleep-badge" style="display: none;" class="listen-badge">⏳ 15m</span>
             </div>
           </div>
 
-          <!-- Main Transport Controls -->
-          <div class="listen-transport-controls">
-            <button type="button" id="btn-listen-prev-page" class="listen-pill-btn" title="Previous Page">‹ Page</button>
-            <button type="button" id="btn-listen-prev-sent" class="listen-btn" title="Previous Sentence">⏮</button>
-            <button type="button" id="btn-listen-seek-back" class="listen-btn" title="Back 15s">↺ 15</button>
-            <button type="button" id="btn-listen-play-toggle" class="listen-btn listen-btn-primary" title="Play">▶</button>
-            <button type="button" id="btn-listen-seek-fwd" class="listen-btn" title="Forward 15s">15 ↻</button>
-            <button type="button" id="btn-listen-next-sent" class="listen-btn" title="Next Sentence">⏭</button>
-            <button type="button" id="btn-listen-next-page" class="listen-pill-btn" title="Next Page">Page ›</button>
-            <button type="button" id="btn-listen-stop" class="listen-btn" title="Stop">⏹</button>
-          </div>
-
           <div style="display: flex; align-items: center; gap: 6px;">
-            <button type="button" id="btn-listen-bookmark" class="listen-pill-btn" title="Add Bookmark at this sentence">🔖 Mark</button>
+            <button type="button" id="btn-listen-bookmark" class="listen-pill-btn" title="View or Add Bookmarks">🔖 Mark</button>
             <button type="button" id="btn-listen-focus" class="listen-pill-btn" title="Distraction-Free Focus Mode">🎯 Focus</button>
             <button type="button" id="btn-listen-close" class="listen-btn" style="width: 28px; height: 28px; font-size: 11px;" title="Close Player">✕</button>
           </div>
         </div>
 
-        <!-- Scrubber Row -->
-        <div class="listen-scrubber-row">
+        <!-- Row 2: Main Transport Controls Centered -->
+        <div class="listen-transport-row">
+          <div class="listen-transport-controls">
+            <button type="button" id="btn-listen-prev-sent" class="listen-btn" title="Previous Sentence">⏮</button>
+            <button type="button" id="btn-listen-seek-back" class="listen-btn" title="Back 15s">↺ 15</button>
+            <button type="button" id="btn-listen-play-toggle" class="listen-btn listen-btn-primary" title="Play / Pause">▶</button>
+            <button type="button" id="btn-listen-seek-fwd" class="listen-btn" title="Forward 15s">15 ↻</button>
+            <button type="button" id="btn-listen-next-sent" class="listen-btn" title="Next Sentence">⏭</button>
+            <button type="button" id="btn-listen-stop" class="listen-btn" title="Stop">⏹</button>
+            <button type="button" id="btn-listen-continue-page" class="listen-pill-btn listen-btn-primary" style="display: none; padding: 6px 14px; font-weight: 700; margin-left: 6px;" title="Continue to Next Page">▶ Continue Page</button>
+          </div>
+        </div>
+
+        <!-- Row 3: Progress Slider -->
+        <div class="listen-progress-row">
           <span id="listen-time-elapsed" class="listen-time">0:00</span>
-          <div id="listen-slider-track" class="listen-slider-track">
-            <div id="listen-slider-fill" class="listen-slider-fill"></div>
+          <div class="listen-slider-container" id="listen-slider-track">
+            <div class="listen-slider-fill" id="listen-slider-fill"></div>
           </div>
           <span id="listen-time-remaining" class="listen-time">-0:00</span>
         </div>
 
-        <!-- Options Row: Voice, Speed, Timer, Follow Along -->
-        <div class="listen-options-row">
+        <!-- Row 4: Controls Row -->
+        <div class="listen-controls-row">
           <div class="listen-select-group">
-            <label for="select-listen-voice" style="font-weight: 600; color: #475569;">Voice:</label>
-            <select id="select-listen-voice" class="listen-select">
-              <option value="cf:luna">Luna (Studio Natural)</option>
+            <span class="listen-label">Voice:</span>
+            <select id="select-listen-voice" class="listen-select" style="max-width: 200px;">
+              <option value="cf:luna">Luna (Neural Studio — Female)</option>
+              <option value="cf:orion">Orion (Neural Studio — Male)</option>
             </select>
           </div>
 
           <div class="listen-select-group">
-            <label for="select-listen-speed" style="font-weight: 600; color: #475569;">Speed:</label>
+            <span class="listen-label">Speed:</span>
             <select id="select-listen-speed" class="listen-select">
               <option value="0.75">0.75x</option>
               <option value="1.0" selected>1.0x</option>
@@ -164,37 +176,33 @@
           </div>
 
           <div class="listen-select-group">
-            <label for="select-listen-sleep" style="font-weight: 600; color: #475569;">Sleep:</label>
+            <span class="listen-label">Sleep:</span>
             <select id="select-listen-sleep" class="listen-select">
-              <option value="0">Off</option>
-              <option value="5">5 min</option>
-              <option value="10">10 min</option>
-              <option value="15">15 min</option>
-              <option value="30">30 min</option>
-              <option value="60">60 min</option>
-              <option value="paragraph">End of Paragraph</option>
-              <option value="section">End of Section</option>
+              <option value="off" selected>Off</option>
+              <option value="15">15m</option>
+              <option value="30">30m</option>
+              <option value="45">45m</option>
+              <option value="60">60m</option>
             </select>
           </div>
 
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <button type="button" id="btn-toggle-follow" class="listen-pill-btn active" title="Synchronized Highlighting & Auto-scroll">
-              <span id="follow-indicator">✨</span> Follow Along
-            </button>
-            <button type="button" id="btn-listen-ai-explain" class="listen-pill-btn" title="Explain spoken sentence with AI Tutor">
-              <span>🤖</span> Explain
-            </button>
+          <div style="display: flex; gap: 8px; margin-left: auto;">
+            <button type="button" id="btn-toggle-follow" class="listen-pill-btn active" title="Toggle Synchronized Highlighting">✨ Follow Along</button>
+            <button type="button" id="btn-listen-ai-explain" class="listen-pill-btn" title="Ask AI Tutor to explain active sentence">🤖 Explain</button>
           </div>
         </div>
 
-        <!-- Bookmarks Drawer -->
+        <!-- Bookmarks Drawer (Positioned above bar as popup, non-intrusive) -->
         <div id="listen-bookmarks-drawer" class="listen-drawer">
           <div class="listen-drawer-head">
-            <h3 style="margin: 0; font-size: 15px; font-weight: 700; color: #0f172a;">🔖 Listening Bookmarks</h3>
-            <button type="button" id="btn-close-drawer" class="listen-btn" style="width: 28px; height: 28px;">✕</button>
+            <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #0f172a;">🔖 Bookmarks</h3>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <button type="button" id="btn-add-bookmark-action" class="listen-pill-btn" style="padding: 2px 8px; font-size: 11px;">+ New</button>
+              <button type="button" id="btn-close-drawer" class="listen-btn" style="width: 24px; height: 24px; font-size: 11px;">✕</button>
+            </div>
           </div>
           <div class="listen-drawer-body" id="listen-bookmarks-list">
-            <p style="color: #64748b; font-size: 13px;">No bookmarks saved yet. Click '🔖 Mark' while listening to save key points.</p>
+            <p style="color: #64748b; font-size: 12px; margin: 0;">No bookmarks saved yet. Click '+ New' while listening to save key points.</p>
           </div>
         </div>
       `;
@@ -214,12 +222,14 @@
         btnPlayToggle: container.querySelector("#btn-listen-play-toggle"),
         btnPrevPage: container.querySelector("#btn-listen-prev-page"),
         btnNextPage: container.querySelector("#btn-listen-next-page"),
+        btnContinuePage: container.querySelector("#btn-listen-continue-page"),
         btnPrevSent: container.querySelector("#btn-listen-prev-sent"),
         btnNextSent: container.querySelector("#btn-listen-next-sent"),
         btnSeekBack: container.querySelector("#btn-listen-seek-back"),
         btnSeekFwd: container.querySelector("#btn-listen-seek-fwd"),
         btnStop: container.querySelector("#btn-listen-stop"),
         btnBookmark: container.querySelector("#btn-listen-bookmark"),
+        btnAddBookmark: container.querySelector("#btn-add-bookmark-action"),
         btnFocus: container.querySelector("#btn-listen-focus"),
         btnClose: container.querySelector("#btn-listen-close"),
         selectVoice: container.querySelector("#select-listen-voice"),
@@ -257,6 +267,9 @@
       }
       if (el.btnNextPage) {
         el.btnNextPage.addEventListener("click", () => this.nextPage());
+      }
+      if (el.btnContinuePage) {
+        el.btnContinuePage.addEventListener("click", () => this.continueToNextPage());
       }
       if (el.selectPage) {
         el.selectPage.addEventListener("change", (e) => {
@@ -314,12 +327,35 @@
         }
       });
 
-      // Bookmarks Drawer
-      el.btnBookmark.addEventListener("click", () => this.openAddBookmarkPrompt());
+      // Bookmarks Drawer toggle & add
+      el.btnBookmark.addEventListener("click", () => this.toggleBookmarksDrawer());
+      if (el.btnAddBookmark) {
+        el.btnAddBookmark.addEventListener("click", () => this.openAddBookmarkPrompt());
+      }
       el.btnCloseDrawer.addEventListener("click", () => el.drawer.classList.remove("open"));
+
+      // Click outside drawer to close
+      document.addEventListener("click", (e) => {
+        if (el.drawer && el.drawer.classList.contains("open")) {
+          if (!el.drawer.contains(e.target) && e.target !== el.btnBookmark) {
+            el.drawer.classList.remove("open");
+          }
+        }
+      });
 
       // AI Explain current sentence
       el.btnAiExplain.addEventListener("click", () => this.explainCurrentSentence());
+    }
+
+    /**
+     * Toggles bookmarks drawer open/closed.
+     */
+    toggleBookmarksDrawer() {
+      if (this.elements.drawer.classList.contains("open")) {
+        this.elements.drawer.classList.remove("open");
+      } else {
+        this.loadBookmarks(true);
+      }
     }
 
     /**
@@ -335,6 +371,18 @@
         this.elements.sliderFill.style.width = `${pct}%`;
         this.elements.timeElapsed.textContent = this.formatTime(current);
         this.elements.timeRemaining.textContent = `-${this.formatTime(Math.max(0, total - current))}`;
+
+        // Word-level follow-along estimate for neural audio playback
+        if (this.followAlong && total > 0) {
+          const block = this.blocks[this.currentBlockIndex];
+          const sentenceObj = block?.sentences?.[this.currentSentenceIndex];
+          const raw = sentenceObj?.raw || "";
+          const words = raw.split(/\s+/).filter(Boolean);
+          if (words.length > 0) {
+            const wordIdx = Math.min(words.length - 1, Math.floor((current / total) * words.length));
+            this.highlightSpokenWord(words[wordIdx]);
+          }
+        }
       });
 
       this.audio.addEventListener("ended", () => {
@@ -351,17 +399,17 @@
     }
 
     /**
-     * Formats seconds to mm:ss.
+     * Formats seconds into MM:SS display.
      */
-    formatTime(sec) {
-      const s = Math.floor(sec || 0);
-      const m = Math.floor(s / 60);
-      const rem = s % 60;
-      return `${m}:${rem < 10 ? "0" : ""}${rem}`;
+    formatTime(seconds) {
+      if (isNaN(seconds) || seconds < 0) return "0:00";
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
     }
 
     /**
-     * Fetches all available voices from the backend and device speech synthesis.
+     * Populates available voices dropdown from backend and local speech synthesis.
      */
     async loadVoices() {
       let serverVoices = [];
@@ -376,6 +424,7 @@
       }
 
       const sel = this.elements.selectVoice;
+      if (!sel) return;
       sel.innerHTML = "";
 
       // Server neural studio voices first
@@ -386,11 +435,15 @@
       browserGroup.label = "Device / Browser Voices";
 
       serverVoices.forEach(v => {
+        if (!v) return;
         const opt = document.createElement("option");
-        opt.value = v.id;
-        const displayName = v.name || v.label || v.id;
+        opt.value = v.id || v.voice || "";
+        const displayName = v.name || v.label || v.displayName || v.id || "Voice";
         opt.textContent = `${displayName}${v.isStudio ? " ✦" : ""}`;
-        if (v.provider === "cloudflare" || v.provider === "google" || v.id.startsWith("cf:") || v.id.startsWith("gcp:")) {
+        if (opt.textContent.includes("undefined")) {
+          opt.textContent = opt.value || "Neural Voice";
+        }
+        if (v.provider === "cloudflare" || v.provider === "google" || (v.id && (v.id.startsWith("cf:") || v.id.startsWith("gcp:")))) {
           cfGroup.appendChild(opt);
         } else {
           browserGroup.appendChild(opt);
@@ -401,11 +454,16 @@
       if ("speechSynthesis" in window) {
         const localVoices = window.speechSynthesis.getVoices() || [];
         localVoices.forEach(lv => {
-          const id = `browser:${lv.name}`;
+          if (!lv) return;
+          const name = lv.name || lv.voiceURI || "Device Voice";
+          const id = `browser:${name}`;
           if (!browserGroup.querySelector(`option[value="${id}"]`)) {
             const opt = document.createElement("option");
             opt.value = id;
-            opt.textContent = `${lv.name} (${lv.lang})`;
+            opt.textContent = lv.lang ? `${name} (${lv.lang})` : name;
+            if (opt.textContent.includes("undefined")) {
+              opt.textContent = name;
+            }
             browserGroup.appendChild(opt);
           }
         });
@@ -537,6 +595,10 @@
       if (!this.blocks.length) return;
       const targetIdx = this.blocks.findIndex(b => b.pageNumber === targetPageNum);
       if (targetIdx !== -1) {
+        if (this.elements.btnContinuePage) {
+          this.elements.btnContinuePage.style.display = "none";
+        }
+        this.nextPendingPageNum = null;
         this.currentBlockIndex = targetIdx;
         this.currentSentenceIndex = 0;
         if (this.onPageChangeCallback) {
@@ -593,7 +655,7 @@
      * Plays or pauses audio playback.
      */
     togglePlay() {
-      if (this.isPlaying) {
+      if (this.isPlaying && !this.isPaused) {
         this.pause();
       } else {
         this.play();
@@ -604,17 +666,35 @@
      * Begins or resumes playback.
      */
     async play() {
+      // If waiting on page boundary, Continue button has priority
+      if (this.elements.btnContinuePage && this.elements.btnContinuePage.style.display !== "none") {
+        this.continueToNextPage();
+        return;
+      }
+
+      // Check if paused HTML5 audio can be resumed directly
       if (this.isPaused && this.audio.src) {
         try {
           await this.audio.play();
           this.isPlaying = true;
           this.isPaused = false;
           this.elements.btnPlayToggle.textContent = "⏸";
+          if (this.elements.btnContinuePage) this.elements.btnContinuePage.style.display = "none";
           this.highlightCurrentSentence();
           return;
         } catch (e) {
           console.warn("[ListenPlayer] Resume failed, replaying sentence:", e);
         }
+      }
+
+      this.isPlaying = true;
+      this.isPaused = false;
+      this.playWhenReady = false;
+      if (this.elements.btnPlayToggle) {
+        this.elements.btnPlayToggle.textContent = "⏸";
+      }
+      if (this.elements.btnContinuePage) {
+        this.elements.btnContinuePage.style.display = "none";
       }
 
       if (this.isLoadingBlocks) {
@@ -629,12 +709,14 @@
         await this.loadDocumentBlocks();
         if (!this.blocks || this.blocks.length === 0) {
           this.elements.blockLabel.textContent = "⚠️ No readable text found for speech synthesis.";
+          this.isPlaying = false;
           this.playWhenReady = false;
+          if (this.elements.btnPlayToggle) this.elements.btnPlayToggle.textContent = "▶";
           return;
         }
       }
 
-      // If current block has no valid spoken text, find the first playable block
+      // If current block has no valid spoken text, find first playable block
       let currBlock = this.blocks[this.currentBlockIndex];
       let currSpoken = currBlock?.sentences?.[this.currentSentenceIndex]?.spoken || currBlock?.spokenText || currBlock?.rawText;
       if (!currBlock || !currSpoken || !currSpoken.trim()) {
@@ -660,6 +742,11 @@
       this.playWhenReady = false;
       this.elements.btnPlayToggle.textContent = "▶";
 
+      if (this.sentencePauseTimer) {
+        clearTimeout(this.sentencePauseTimer);
+        this.sentencePauseTimer = null;
+      }
+
       if (this.currentAbortController) {
         try { this.currentAbortController.abort(); } catch (_) {}
         this.currentAbortController = null;
@@ -684,6 +771,16 @@
       this.isPaused = false;
       this.playWhenReady = false;
       this.elements.btnPlayToggle.textContent = "▶";
+
+      if (this.sentencePauseTimer) {
+        clearTimeout(this.sentencePauseTimer);
+        this.sentencePauseTimer = null;
+      }
+
+      if (this.elements.btnContinuePage) {
+        this.elements.btnContinuePage.style.display = "none";
+      }
+      this.nextPendingPageNum = null;
 
       if (this.currentAbortController) {
         try { this.currentAbortController.abort(); } catch (_) {}
@@ -726,26 +823,90 @@
     }
 
     /**
-     * Advances to next sentence.
+     * Handles page complete boundary: stops playback and shows Continue button.
+     */
+    handlePageCompleteBoundary(nextPageNum) {
+      this.isPlaying = false;
+      this.isPaused = true;
+      if (this.elements.btnPlayToggle) {
+        this.elements.btnPlayToggle.textContent = "▶";
+      }
+
+      const currentBlock = this.blocks[this.currentBlockIndex];
+      const curPage = currentBlock?.pageNumber || 1;
+
+      if (this.elements.blockLabel) {
+        this.elements.blockLabel.textContent = `✅ Completed Page ${curPage}. Click Continue for Page ${nextPageNum}`;
+      }
+
+      if (this.elements.btnContinuePage) {
+        this.elements.btnContinuePage.textContent = `▶ Continue to Page ${nextPageNum}`;
+        this.elements.btnContinuePage.style.display = "inline-flex";
+      }
+
+      this.nextPendingPageNum = nextPageNum;
+    }
+
+    /**
+     * User clicks Continue to advance to next page.
+     */
+    continueToNextPage() {
+      if (this.elements.btnContinuePage) {
+        this.elements.btnContinuePage.style.display = "none";
+      }
+      const targetPage = this.nextPendingPageNum || (this.blocks[this.currentBlockIndex]?.pageNumber || 1) + 1;
+      this.nextPendingPageNum = null;
+      this.jumpToPage(targetPage);
+      this.play();
+    }
+
+    /**
+     * Advances to next sentence with background prefetching and crisp 400ms pause.
      */
     async nextSentence() {
-      const block = this.blocks[this.currentBlockIndex];
-      if (!block) return;
+      if (this.sentencePauseTimer) {
+        clearTimeout(this.sentencePauseTimer);
+        this.sentencePauseTimer = null;
+      }
 
-      if (this.currentSentenceIndex + 1 < (block.sentences?.length || 0)) {
+      const currentBlock = this.blocks[this.currentBlockIndex];
+      if (!currentBlock) return;
+
+      const currentPageNum = currentBlock.pageNumber || 1;
+
+      // Check next sentence within current block
+      if (this.currentSentenceIndex + 1 < (currentBlock.sentences?.length || 0)) {
         this.currentSentenceIndex++;
       } else if (this.currentBlockIndex + 1 < this.blocks.length) {
+        const nextBlock = this.blocks[this.currentBlockIndex + 1];
+        const nextPageNum = nextBlock.pageNumber || (currentPageNum + 1);
+
+        // PAGE BOUNDARY CHECK:
+        // Once one page is read, stop and require Continue button click
+        if (nextPageNum !== currentPageNum) {
+          this.handlePageCompleteBoundary(nextPageNum);
+          return;
+        }
+
         this.currentBlockIndex++;
         this.currentSentenceIndex = 0;
       } else {
         // Reached end of document
         this.stop();
+        if (this.elements.blockLabel) {
+          this.elements.blockLabel.textContent = "✅ Completed reading document.";
+        }
         return;
       }
 
       this.updateBlockUI();
       if (this.isPlaying && !this.isPaused) {
-        await this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
+        // Reduced pause between lines: exactly 400ms (strictly <= 1.0s)
+        this.sentencePauseTimer = setTimeout(() => {
+          if (this.isPlaying && !this.isPaused) {
+            this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
+          }
+        }, 400);
       }
     }
 
@@ -753,6 +914,11 @@
      * Jumps to previous sentence.
      */
     async previousSentence() {
+      if (this.sentencePauseTimer) {
+        clearTimeout(this.sentencePauseTimer);
+        this.sentencePauseTimer = null;
+      }
+
       if (this.currentSentenceIndex > 0) {
         this.currentSentenceIndex--;
       } else if (this.currentBlockIndex > 0) {
@@ -764,6 +930,80 @@
       this.updateBlockUI();
       if (this.isPlaying && !this.isPaused) {
         await this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
+      }
+    }
+
+    /**
+     * Deterministic preload key for sentence audio.
+     */
+    getPreloadKey(blockIndex, sentenceIndex) {
+      return `${this.documentId}_b${blockIndex}_s${sentenceIndex}_v${this.voiceId}_sp${this.speed}`;
+    }
+
+    /**
+     * Pre-fetches the next sentence in the background while current sentence plays.
+     */
+    async prefetchSentence(blockIndex, sentenceIndex) {
+      if (this.voiceId.startsWith("browser:")) return;
+      if (blockIndex >= this.blocks.length) return;
+
+      const block = this.blocks[blockIndex];
+      if (!block || !block.sentences || sentenceIndex >= block.sentences.length) return;
+
+      const cacheKey = this.getPreloadKey(blockIndex, sentenceIndex);
+      if (this.audioPreloadCache.has(cacheKey)) return;
+
+      const sentenceObj = block.sentences[sentenceIndex];
+      const spokenText = sentenceObj?.spoken || sentenceObj?.raw || block.spokenText || block.rawText;
+      if (!spokenText || !spokenText.trim()) return;
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(this.documentId)}/synthesize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            text: spokenText,
+            voice: this.voiceId,
+            speed: this.speed,
+            pageNumber: block.pageNumber || 1,
+            chunkIndex: sentenceIndex
+          })
+        });
+
+        if (response.ok) {
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("audio/") || contentType.includes("octet-stream")) {
+            const audioBlob = await response.blob();
+            const objectUrl = URL.createObjectURL(audioBlob);
+            this.audioPreloadCache.set(cacheKey, objectUrl);
+          }
+        }
+      } catch (_) {
+        // Non-blocking prefetch failure is fine; will fetch on demand
+      }
+    }
+
+    /**
+     * Triggers background prefetch for the upcoming sentence.
+     */
+    triggerPrefetchNext(blockIndex, sentenceIndex) {
+      const block = this.blocks[blockIndex];
+      if (!block) return;
+
+      let nextB = blockIndex;
+      let nextS = sentenceIndex + 1;
+      if (nextS >= (block.sentences?.length || 0)) {
+        nextB = blockIndex + 1;
+        nextS = 0;
+      }
+
+      if (nextB < this.blocks.length) {
+        const nextBlock = this.blocks[nextB];
+        // Only prefetch if next sentence is on the same page
+        if (nextBlock && nextBlock.pageNumber === block.pageNumber) {
+          this.prefetchSentence(nextB, nextS);
+        }
       }
     }
 
@@ -807,57 +1047,88 @@
         return;
       }
 
-      // Create AbortController to cleanly cancel in-flight network requests on stop
-      if (this.currentAbortController) {
-        try { this.currentAbortController.abort(); } catch (_) {}
-      }
-      this.currentAbortController = new AbortController();
-      const signal = this.currentAbortController.signal;
+      // Check preloaded audio cache for instant playback (< 400ms transition)
+      const cacheKey = this.getPreloadKey(blockIndex, sentenceIndex);
+      let objectUrl = this.audioPreloadCache.get(cacheKey);
 
-      // Fetch or stream neural audio from backend
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(this.documentId)}/synthesize`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          signal,
-          body: JSON.stringify({
-            text: spokenText,
-            voice: this.voiceId,
-            speed: this.speed,
-            pageNumber: block.pageNumber || 1,
-            chunkIndex: sentenceIndex
-          })
-        });
-
-        if (!this.isPlaying || this.isPaused) return;
-
-        if (!response.ok) {
-          throw new Error("Backend synthesis returned status " + response.status);
+      if (!objectUrl) {
+        // Create AbortController to cleanly cancel in-flight network requests on stop
+        if (this.currentAbortController) {
+          try { this.currentAbortController.abort(); } catch (_) {}
         }
+        this.currentAbortController = new AbortController();
+        const signal = this.currentAbortController.signal;
 
-        const audioBlob = await response.blob();
-        if (!this.isPlaying || this.isPaused) return;
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(this.documentId)}/synthesize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            signal,
+            body: JSON.stringify({
+              text: spokenText,
+              voice: this.voiceId,
+              speed: this.speed,
+              pageNumber: block.pageNumber || 1,
+              chunkIndex: sentenceIndex
+            })
+          });
 
+          if (!this.isPlaying || this.isPaused) return;
+
+          if (!response.ok) {
+            throw new Error("Backend synthesis returned status " + response.status);
+          }
+
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const data = await response.json();
+            if (data.useClientSynthesis) {
+              await this.speakWithBrowserVoice(spokenText);
+              return;
+            }
+          }
+
+          const audioBlob = await response.blob();
+          if (!this.isPlaying || this.isPaused) return;
+
+          objectUrl = URL.createObjectURL(audioBlob);
+        } catch (err) {
+          if (!this.isPlaying || this.isPaused || err.name === "AbortError") {
+            return;
+          }
+          console.warn("[ListenPlayer] Neural synthesis error, falling back to browser speech:", err.message);
+          await this.speakWithBrowserVoice(spokenText);
+          return;
+        }
+      }
+
+      if (!this.isPlaying || this.isPaused) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+
+      try {
         if (this.audio.src) {
           URL.revokeObjectURL(this.audio.src);
         }
-        this.audio.src = URL.createObjectURL(audioBlob);
+        this.audio.src = objectUrl;
         this.audio.playbackRate = this.speed;
         await this.audio.play();
 
         this.saveHistoryProgress();
-      } catch (err) {
-        if (!this.isPlaying || this.isPaused || err.name === "AbortError") {
-          return;
-        }
-        console.warn("[ListenPlayer] Neural synthesis error, falling back to browser speech:", err.message);
+
+        // While this sentence is playing, trigger prefetch for next sentence in background!
+        this.triggerPrefetchNext(blockIndex, sentenceIndex);
+      } catch (playErr) {
+        if (!this.isPlaying || this.isPaused) return;
+        console.warn("[ListenPlayer] Audio play failed, falling back to browser speech:", playErr.message);
         await this.speakWithBrowserVoice(spokenText);
       }
     }
 
     /**
-     * Browser speech synthesis fallback.
+     * Browser speech synthesis with word-level boundary tracking.
      */
     speakWithBrowserVoice(text) {
       return new Promise((resolve) => {
@@ -885,6 +1156,17 @@
             utterance.lang = matchedVoice.lang;
           }
         }
+
+        // Exact word pointing boundary event
+        utterance.onboundary = (event) => {
+          if (!this.followAlong) return;
+          if (event.name === "word") {
+            const charIdx = event.charIndex || 0;
+            const charLen = event.charLength || 6;
+            const word = text.substr(charIdx, charLen);
+            this.highlightSpokenWord(word);
+          }
+        };
 
         utterance.onend = () => {
           this.currentUtterance = null;
@@ -935,37 +1217,27 @@
       if (!block) return;
 
       const sentenceObj = block.sentences?.[this.currentSentenceIndex];
-      const rawSentence = (sentenceObj?.raw || "").trim().toLowerCase();
+      const rawSentence = (sentenceObj?.raw || "").trim();
+      if (!rawSentence) return;
 
       // 1. PDF Text Layer Highlighting
       const textLayer = document.getElementById("pdf-text-layer");
-      if (textLayer && rawSentence) {
+      if (textLayer) {
         const spans = Array.from(textLayer.querySelectorAll("span"));
-        let matched = false;
+        const cleanWords = rawSentence.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length >= 3);
 
-        // Extract key search words (>= 4 chars) to locate span
-        const searchWords = rawSentence.split(/\s+/).filter(w => w.length >= 4).slice(0, 3);
-
+        let firstMatchSpan = null;
         for (const span of spans) {
-          const spanText = span.textContent.toLowerCase();
-          if (searchWords.length > 0 && searchWords.every(sw => spanText.includes(sw))) {
+          const spanText = (span.textContent || "").toLowerCase();
+          const hitCount = cleanWords.filter(cw => spanText.includes(cw)).length;
+          if (hitCount > 0) {
             span.classList.add("listen-highlight-sentence");
-            span.scrollIntoView({ behavior: "smooth", block: "center" });
-            matched = true;
-            break;
+            if (!firstMatchSpan) firstMatchSpan = span;
           }
         }
 
-        if (!matched && spans.length > 0) {
-          // Highlight first matching span
-          const firstWord = searchWords[0] || rawSentence.slice(0, 8);
-          for (const span of spans) {
-            if (span.textContent.toLowerCase().includes(firstWord)) {
-              span.classList.add("listen-highlight-sentence");
-              span.scrollIntoView({ behavior: "smooth", block: "center" });
-              break;
-            }
-          }
+        if (firstMatchSpan) {
+          firstMatchSpan.scrollIntoView({ behavior: "smooth", block: "center" });
         }
       }
 
@@ -984,10 +1256,38 @@
     }
 
     /**
+     * Highlights the active spoken word with a luminous yellow glow (Word Follow-Along).
+     */
+    highlightSpokenWord(wordText) {
+      if (!this.followAlong || !wordText) return;
+      const cleanWord = wordText.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (cleanWord.length < 2) return;
+
+      // Clear previous word highlight
+      document.querySelectorAll(".listen-highlight-word").forEach(el => el.classList.remove("listen-highlight-word"));
+
+      const textLayer = document.getElementById("pdf-text-layer");
+      if (!textLayer) return;
+
+      // Search among sentence-highlighted spans first, then all spans
+      const activeSentenceSpans = Array.from(textLayer.querySelectorAll(".listen-highlight-sentence"));
+      const targetPool = activeSentenceSpans.length > 0 ? activeSentenceSpans : Array.from(textLayer.querySelectorAll("span"));
+
+      for (const span of targetPool) {
+        const spanText = (span.textContent || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (spanText.includes(cleanWord)) {
+          span.classList.add("listen-highlight-word");
+          break;
+        }
+      }
+    }
+
+    /**
      * Clears all highlighted sentences and sections.
      */
     clearHighlights() {
       document.querySelectorAll(".listen-highlight-sentence").forEach(el => el.classList.remove("listen-highlight-sentence"));
+      document.querySelectorAll(".listen-highlight-word").forEach(el => el.classList.remove("listen-highlight-word"));
       document.querySelectorAll(".listen-active-section").forEach(el => el.classList.remove("listen-active-section"));
     }
 
@@ -1070,16 +1370,8 @@
 
       banner.querySelector("#btn-do-resume").addEventListener("click", () => {
         banner.remove();
-        if (history.voice_used) this.elements.selectVoice.value = history.voice_used;
-        if (history.speed_used) {
-          this.speed = parseFloat(history.speed_used);
-          this.elements.selectSpeed.value = String(history.speed_used);
-        }
-
-        // Locate block matching last page
-        const targetBlockIdx = this.blocks.findIndex(b => b.pageNumber === history.last_page);
-        const bIdx = targetBlockIdx !== -1 ? targetBlockIdx : 0;
-        this.playSentence(bIdx, 0);
+        this.jumpToPage(history.last_page);
+        this.play();
       });
 
       banner.querySelector("#btn-dismiss-resume").addEventListener("click", () => {
@@ -1088,15 +1380,12 @@
     }
 
     /**
-     * Persists playback progress to PostgreSQL via API.
+     * Saves user listening progress and preferences to server.
      */
     async saveHistoryProgress() {
-      if (!this.documentId || !this.blocks.length) return;
-
+      if (!this.documentId) return;
       const block = this.blocks[this.currentBlockIndex];
       const pageNum = block?.pageNumber || 1;
-      const totalBlocks = this.blocks.length;
-      const pct = Math.round(((this.currentBlockIndex + 1) / totalBlocks) * 100);
 
       try {
         await fetch(`${API_BASE_URL}/api/listen/history/${encodeURIComponent(this.documentId)}`, {
@@ -1104,47 +1393,52 @@
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            pageNumber: pageNum,
-            blockId: block?.blockId || `b_${this.currentBlockIndex}`,
-            audioTimestamp: this.audio.currentTime || 0,
-            completionPercentage: pct,
-            voice: this.voiceId,
-            speed: this.speed
+            lastPage: pageNum,
+            lastBlockId: block?.blockId,
+            lastAudioTimestamp: this.audio.currentTime || 0,
+            completionPercent: Math.round(((this.currentBlockIndex + 1) / (this.blocks.length || 1)) * 100),
+            preferredVoice: this.voiceId,
+            preferredSpeed: this.speed
           })
         });
-      } catch (_) {}
+      } catch (err) {
+        // Non-blocking history save
+      }
     }
 
     /**
-     * Sets a sleep timer (minutes or paragraph/section trigger).
+     * Sets sleep timer to auto-pause after specified minutes.
      */
-    setSleepTimer(val) {
+    setSleepTimer(minutesStr) {
       if (this.sleepTimerInterval) clearInterval(this.sleepTimerInterval);
-      this.elements.sleepBadge.style.display = "none";
+      if (this.sleepTimer) clearTimeout(this.sleepTimer);
 
-      if (val === "0") return;
-
-      if (val === "paragraph" || val === "section") {
-        this.sleepTimer = val;
-        this.elements.sleepBadge.textContent = `⏱ Stop @ ${val}`;
-        this.elements.sleepBadge.style.display = "inline";
+      if (minutesStr === "off") {
+        this.elements.sleepBadge.style.display = "none";
         return;
       }
 
-      const mins = parseInt(val, 10);
-      this.sleepTimerRemainingSeconds = mins * 60;
-      this.elements.sleepBadge.style.display = "inline";
+      const minutes = parseInt(minutesStr, 10);
+      if (isNaN(minutes)) return;
+
+      this.sleepTimerRemainingSeconds = minutes * 60;
+      this.elements.sleepBadge.style.display = "inline-flex";
+      this.elements.sleepBadge.textContent = `⏳ ${minutes}m`;
 
       this.sleepTimerInterval = setInterval(() => {
         this.sleepTimerRemainingSeconds--;
         if (this.sleepTimerRemainingSeconds <= 0) {
           clearInterval(this.sleepTimerInterval);
-          this.stop();
-          this.elements.sleepBadge.textContent = "⏱ Timed Out";
+          this.pause();
+          this.elements.sleepBadge.textContent = "💤 Sleep";
+          setTimeout(() => {
+            this.elements.sleepBadge.style.display = "none";
+            this.elements.selectSleep.value = "off";
+          }, 3000);
         } else {
           const m = Math.floor(this.sleepTimerRemainingSeconds / 60);
           const s = this.sleepTimerRemainingSeconds % 60;
-          this.elements.sleepBadge.textContent = `⏱ ${m}:${s < 10 ? "0" : ""}${s}`;
+          this.elements.sleepBadge.textContent = `⏳ ${m}:${s < 10 ? "0" : ""}${s}`;
         }
       }, 1000);
     }
@@ -1175,8 +1469,7 @@
         });
 
         if (res.ok) {
-          alert("Bookmark saved!");
-          this.loadBookmarks();
+          this.loadBookmarks(true);
         }
       } catch (err) {
         alert("Failed to save bookmark: " + err.message);
@@ -1186,7 +1479,7 @@
     /**
      * Loads saved bookmarks into the drawer.
      */
-    async loadBookmarks() {
+    async loadBookmarks(openDrawer = false) {
       try {
         const res = await fetch(`${API_BASE_URL}/api/listen/bookmarks/${encodeURIComponent(this.documentId)}`, {
           credentials: "include"
@@ -1197,7 +1490,10 @@
 
         const list = this.elements.bookmarksList;
         if (bookmarks.length === 0) {
-          list.innerHTML = `<p style="color: #64748b; font-size: 13px;">No bookmarks saved yet.</p>`;
+          list.innerHTML = `<p style="color: #64748b; font-size: 12px; margin: 0;">No bookmarks saved yet. Click '+ New' while listening to save key points.</p>`;
+          if (openDrawer) {
+            this.elements.drawer.classList.add("open");
+          }
           return;
         }
 
@@ -1222,7 +1518,9 @@
           list.appendChild(item);
         });
 
-        this.elements.drawer.classList.add("open");
+        if (openDrawer) {
+          this.elements.drawer.classList.add("open");
+        }
       } catch (err) {
         console.warn("[ListenPlayer] Load bookmarks error:", err);
       }
