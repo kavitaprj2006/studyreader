@@ -288,6 +288,11 @@ const StudyReaderInlineSpeech = (() => {
 })();
 
 function stopAllSpeechAudio() {
+  if (window.StudyReaderListenPlayer && typeof window.StudyReaderListenPlayer.stop === "function") {
+    try {
+      window.StudyReaderListenPlayer.stop();
+    } catch (_) {}
+  }
   if (StudyReaderInlineSpeech) {
     try {
       StudyReaderInlineSpeech.stop();
@@ -824,6 +829,11 @@ function goToPage(pageNumber) {
   }
   currentPage = parsed;
   renderPage(currentPage);
+
+  // Synchronize player with the user's selected page
+  if (window.StudyReaderListenPlayer && typeof window.StudyReaderListenPlayer.syncPage === "function") {
+    window.StudyReaderListenPlayer.syncPage(currentPage);
+  }
 }
 
 function updateNavigation() {
@@ -1593,6 +1603,7 @@ async function handleStudyTool(tool) {
 
       window.StudyReaderListenPlayer.init({
         documentId: currentPdfId,
+        currentPage: currentPage,
         sections: clientSections,
         onPageChange: (targetPage) => {
           if (targetPage >= 1 && targetPage <= totalPages && targetPage !== currentPage) {

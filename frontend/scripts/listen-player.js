@@ -45,6 +45,7 @@
     init(options = {}) {
       this.documentId = options.documentId;
       this.onPageChangeCallback = options.onPageChange || null;
+      this.pendingInitialPage = options.currentPage || options.initialPage || 1;
 
       // If client sections are provided, use them as instant fallback
       if (Array.isArray(options.sections) && options.sections.length > 0) {
@@ -103,7 +104,9 @@
           <div class="listen-track-info">
             <div class="listen-track-title">
               <span id="listen-doc-title">🎧 StudyReader Listen</span>
-              <span id="listen-page-badge" class="listen-badge">Page 1</span>
+              <select id="select-listen-page" class="listen-badge" style="cursor: pointer; border: 1px solid #c7d2fe; outline: none; background: #eef2ff; color: #4338ca; padding: 2px 8px; font-weight: 700;" title="Choose page to read">
+                <option value="1">Page 1</option>
+              </select>
             </div>
             <div class="listen-track-subtitle">
               <span id="listen-block-label">Loading natural reading blocks...</span>
@@ -113,11 +116,13 @@
 
           <!-- Main Transport Controls -->
           <div class="listen-transport-controls">
+            <button type="button" id="btn-listen-prev-page" class="listen-pill-btn" title="Previous Page">‹ Page</button>
             <button type="button" id="btn-listen-prev-sent" class="listen-btn" title="Previous Sentence">⏮</button>
             <button type="button" id="btn-listen-seek-back" class="listen-btn" title="Back 15s">↺ 15</button>
             <button type="button" id="btn-listen-play-toggle" class="listen-btn listen-btn-primary" title="Play">▶</button>
             <button type="button" id="btn-listen-seek-fwd" class="listen-btn" title="Forward 15s">15 ↻</button>
             <button type="button" id="btn-listen-next-sent" class="listen-btn" title="Next Sentence">⏭</button>
+            <button type="button" id="btn-listen-next-page" class="listen-pill-btn" title="Next Page">Page ›</button>
             <button type="button" id="btn-listen-stop" class="listen-btn" title="Stop">⏹</button>
           </div>
 
@@ -202,10 +207,13 @@
       this.elements = {
         container,
         docTitle: container.querySelector("#listen-doc-title"),
-        pageBadge: container.querySelector("#listen-page-badge"),
+        selectPage: container.querySelector("#select-listen-page"),
+        pageBadge: container.querySelector("#select-listen-page"),
         blockLabel: container.querySelector("#listen-block-label"),
         sleepBadge: container.querySelector("#listen-sleep-badge"),
         btnPlayToggle: container.querySelector("#btn-listen-play-toggle"),
+        btnPrevPage: container.querySelector("#btn-listen-prev-page"),
+        btnNextPage: container.querySelector("#btn-listen-next-page"),
         btnPrevSent: container.querySelector("#btn-listen-prev-sent"),
         btnNextSent: container.querySelector("#btn-listen-next-sent"),
         btnSeekBack: container.querySelector("#btn-listen-seek-back"),
@@ -243,6 +251,19 @@
       el.btnSeekFwd.addEventListener("click", () => this.seekBy(15));
       el.btnPrevSent.addEventListener("click", () => this.previousSentence());
       el.btnNextSent.addEventListener("click", () => this.nextSentence());
+
+      if (el.btnPrevPage) {
+        el.btnPrevPage.addEventListener("click", () => this.previousPage());
+      }
+      if (el.btnNextPage) {
+        el.btnNextPage.addEventListener("click", () => this.nextPage());
+      }
+      if (el.selectPage) {
+        el.selectPage.addEventListener("change", (e) => {
+          const p = parseInt(e.target.value, 10);
+          this.jumpToPage(p);
+        });
+      }
 
       el.selectSpeed.addEventListener("change", (e) => {
         this.speed = parseFloat(e.target.value) || 1.0;
@@ -317,10 +338,13 @@
       });
 
       this.audio.addEventListener("ended", () => {
-        this.nextSentence();
+        if (this.isPlaying && !this.isPaused) {
+          this.nextSentence();
+        }
       });
 
       this.audio.addEventListener("error", (e) => {
+        if (!this.isPlaying || this.isPaused) return;
         console.warn("[ListenPlayer] Audio playback issue, falling back to browser speech synthesis:", e);
         this.fallbackToBrowserSpeech();
       });
@@ -427,7 +451,18 @@
         if (data.blocks && data.blocks.length > 0) {
           this.blocks = data.blocks;
           this.elements.docTitle.textContent = `🎧 ${data.title || "Study Document"}`;
-          this.updateBlockUI();
+
+          // If an initial or user-selected page was passed, cue that page directly
+          if (this.pendingInitialPage && this.pendingInitialPage > 1) {
+            const foundIdx = this.blocks.findIndex(b => b.pageNumber === this.pendingInitialPage);
+            if (foundIdx !== -1) {
+              this.currentBlockIndex = foundIdx;
+              this.currentSentenceIndex = 0;
+            }
+          }
+
+          this.updatePageSelectOptions();
+          this.updateBlockUI({ syncViewer: false });
           if (this.playWhenReady) {
             this.playWhenReady = false;
             this.play();
@@ -446,21 +481,111 @@
     }
 
     /**
+     * Populates the page dropdown with all available pages.
+     */
+    updatePageSelectOptions() {
+      const sel = this.elements.selectPage;
+      if (!sel) return;
+      sel.innerHTML = "";
+      const pageNumbers = [...new Set(this.blocks.map(b => b.pageNumber || 1))].sort((a, b) => a - b);
+      if (pageNumbers.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "1";
+        opt.textContent = "Page 1";
+        sel.appendChild(opt);
+        return;
+      }
+      pageNumbers.forEach(p => {
+        const opt = document.createElement("option");
+        opt.value = String(p);
+        opt.textContent = `Page ${p}`;
+        sel.appendChild(opt);
+      });
+      const currentBlock = this.blocks[this.currentBlockIndex];
+      const currPage = currentBlock?.pageNumber || 1;
+      sel.value = String(currPage);
+    }
+
+    /**
      * Updates the status badge and label based on current block and sentence.
      */
-    updateBlockUI() {
+    updateBlockUI(options = {}) {
       const block = this.blocks[this.currentBlockIndex];
       if (!block) return;
 
       const pageNum = block.pageNumber || 1;
-      this.elements.pageBadge.textContent = `Page ${pageNum}`;
+      if (this.elements.selectPage && this.elements.selectPage.value !== String(pageNum)) {
+        this.elements.selectPage.value = String(pageNum);
+      }
+      if (this.elements.pageBadge && this.elements.pageBadge !== this.elements.selectPage) {
+        this.elements.pageBadge.textContent = `Page ${pageNum}`;
+      }
 
       const totalSentences = block.sentences?.length || 1;
       this.elements.blockLabel.textContent = `${block.title || "Section"} • Sentence ${this.currentSentenceIndex + 1}/${totalSentences}`;
 
-      // Notify page wrapper if page changed
-      if (this.onPageChangeCallback && typeof this.onPageChangeCallback === "function") {
+      // Notify page wrapper ONLY when actively reading and followAlong is active
+      if (options.syncViewer !== false && this.isPlaying && this.followAlong && typeof this.onPageChangeCallback === "function") {
         this.onPageChangeCallback(pageNum);
+      }
+    }
+
+    /**
+     * Jumps directly to a target page number.
+     */
+    jumpToPage(targetPageNum) {
+      if (!this.blocks.length) return;
+      const targetIdx = this.blocks.findIndex(b => b.pageNumber === targetPageNum);
+      if (targetIdx !== -1) {
+        this.currentBlockIndex = targetIdx;
+        this.currentSentenceIndex = 0;
+        if (this.onPageChangeCallback) {
+          this.onPageChangeCallback(targetPageNum);
+        }
+        this.updateBlockUI({ syncViewer: false });
+        if (this.isPlaying) {
+          this.playSentence(this.currentBlockIndex, 0);
+        }
+      }
+    }
+
+    /**
+     * Advances to first sentence of next page.
+     */
+    nextPage() {
+      if (!this.blocks.length) return;
+      const currentBlock = this.blocks[this.currentBlockIndex];
+      const currentPageNum = currentBlock?.pageNumber || 1;
+      const maxPage = Math.max(...this.blocks.map(b => b.pageNumber || 1));
+      const targetPageNum = Math.min(maxPage, currentPageNum + 1);
+      this.jumpToPage(targetPageNum);
+    }
+
+    /**
+     * Jumps to first sentence of previous page.
+     */
+    previousPage() {
+      if (!this.blocks.length) return;
+      const currentBlock = this.blocks[this.currentBlockIndex];
+      const currentPageNum = currentBlock?.pageNumber || 1;
+      const targetPageNum = Math.max(1, currentPageNum - 1);
+      this.jumpToPage(targetPageNum);
+    }
+
+    /**
+     * Synchronizes reading position when user manually navigates in the PDF viewer.
+     */
+    syncPage(pageNumber) {
+      const page = parseInt(pageNumber, 10);
+      if (isNaN(page) || page < 1 || !this.blocks.length) return;
+      const targetIdx = this.blocks.findIndex(b => b.pageNumber === page);
+      if (targetIdx !== -1 && targetIdx !== this.currentBlockIndex) {
+        this.currentBlockIndex = targetIdx;
+        this.currentSentenceIndex = 0;
+        this.updateBlockUI({ syncViewer: false });
+        if (this.isPlaying) {
+          this.playSentence(this.currentBlockIndex, 0);
+        }
       }
     }
 
@@ -532,10 +657,21 @@
     pause() {
       this.isPlaying = false;
       this.isPaused = true;
+      this.playWhenReady = false;
       this.elements.btnPlayToggle.textContent = "▶";
-      this.audio.pause();
+
+      if (this.currentAbortController) {
+        try { this.currentAbortController.abort(); } catch (_) {}
+        this.currentAbortController = null;
+      }
+
+      if (this.audio) {
+        this.audio.pause();
+      }
       if ("speechSynthesis" in window) {
-        window.speechSynthesis.pause();
+        try {
+          window.speechSynthesis.pause();
+        } catch (_) {}
       }
       this.saveHistoryProgress();
     }
@@ -546,12 +682,35 @@
     stop() {
       this.isPlaying = false;
       this.isPaused = false;
+      this.playWhenReady = false;
       this.elements.btnPlayToggle.textContent = "▶";
-      this.audio.pause();
-      this.audio.currentTime = 0;
-      if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
+
+      if (this.currentAbortController) {
+        try { this.currentAbortController.abort(); } catch (_) {}
+        this.currentAbortController = null;
       }
+
+      if (this.audio) {
+        this.audio.pause();
+        this.audio.currentTime = 0;
+        if (this.audio.src) {
+          try {
+            URL.revokeObjectURL(this.audio.src);
+            this.audio.removeAttribute("src");
+            this.audio.load();
+          } catch (_) {}
+        }
+      }
+
+      if ("speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch (_) {}
+      }
+
+      this.currentUtterance = null;
+      window._activeSpeechUtterance = null;
+
       this.clearHighlights();
       this.elements.sliderFill.style.width = "0%";
       this.elements.timeElapsed.textContent = "0:00";
@@ -585,7 +744,7 @@
       }
 
       this.updateBlockUI();
-      if (this.isPlaying) {
+      if (this.isPlaying && !this.isPaused) {
         await this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
       }
     }
@@ -603,7 +762,7 @@
       }
 
       this.updateBlockUI();
-      if (this.isPlaying) {
+      if (this.isPlaying && !this.isPaused) {
         await this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
       }
     }
@@ -632,6 +791,8 @@
         }
       }
 
+      if (!this.isPlaying || this.isPaused) return;
+
       this.isPlaying = true;
       this.isPaused = false;
       this.elements.btnPlayToggle.textContent = "⏸";
@@ -646,12 +807,20 @@
         return;
       }
 
+      // Create AbortController to cleanly cancel in-flight network requests on stop
+      if (this.currentAbortController) {
+        try { this.currentAbortController.abort(); } catch (_) {}
+      }
+      this.currentAbortController = new AbortController();
+      const signal = this.currentAbortController.signal;
+
       // Fetch or stream neural audio from backend
       try {
         const response = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(this.documentId)}/synthesize`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
+          signal,
           body: JSON.stringify({
             text: spokenText,
             voice: this.voiceId,
@@ -661,11 +830,15 @@
           })
         });
 
+        if (!this.isPlaying || this.isPaused) return;
+
         if (!response.ok) {
           throw new Error("Backend synthesis returned status " + response.status);
         }
 
         const audioBlob = await response.blob();
+        if (!this.isPlaying || this.isPaused) return;
+
         if (this.audio.src) {
           URL.revokeObjectURL(this.audio.src);
         }
@@ -675,6 +848,9 @@
 
         this.saveHistoryProgress();
       } catch (err) {
+        if (!this.isPlaying || this.isPaused || err.name === "AbortError") {
+          return;
+        }
         console.warn("[ListenPlayer] Neural synthesis error, falling back to browser speech:", err.message);
         await this.speakWithBrowserVoice(spokenText);
       }
@@ -685,7 +861,7 @@
      */
     speakWithBrowserVoice(text) {
       return new Promise((resolve) => {
-        if (!("speechSynthesis" in window) || !text || !text.trim()) {
+        if (!("speechSynthesis" in window) || !text || !text.trim() || !this.isPlaying || this.isPaused) {
           resolve();
           return;
         }
@@ -720,9 +896,11 @@
         };
 
         utterance.onerror = (err) => {
-          console.warn("[ListenPlayer] Speech synthesis error:", err);
           this.currentUtterance = null;
           window._activeSpeechUtterance = null;
+          if (this.isPlaying && !this.isPaused && err && err.error !== "canceled" && err.error !== "interrupted") {
+            this.nextSentence();
+          }
           resolve();
         };
 
@@ -730,6 +908,10 @@
         window._activeSpeechUtterance = utterance;
 
         try {
+          if (!this.isPlaying || this.isPaused) {
+            resolve();
+            return;
+          }
           window.speechSynthesis.speak(utterance);
           if (window.speechSynthesis.paused) {
             window.speechSynthesis.resume();
