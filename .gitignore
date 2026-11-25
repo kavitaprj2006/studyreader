@@ -48,5 +48,8 @@ database/backups/*
 __pycache__/
 *.pyc
 *.pyo
+
+# OCR Training Data Cache
+*.traineddata
 *.pyd
 .pytest_cache/

@@ -1,0 +1,363 @@
+/* ============================================================
+   STUDYREADER LISTEN — ADVANCED AUDIO PLAYER & HIGHLIGHTING
+   Unified design matching StudyReader visual system
+   ============================================================ */
+
+/* 1. Synchronized Highlighting (Follow Along) */
+.textLayer span.listen-highlight-sentence {
+  background: rgba(99, 102, 241, 0.28) !important;
+  color: #1e1b4b !important;
+  border-bottom: 2px solid #4f46e5 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.35);
+  transition: background-color 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+}
+
+.textLayer span.listen-clickable-sentence:hover {
+  background: rgba(99, 102, 241, 0.12) !important;
+  border-bottom: 1px dashed #6366f1 !important;
+}
+
+/* DOCX & PPTX Card Highlighting */
+.docx-section-block.listen-active-section,
+.pptx-slide-card.listen-active-section {
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18), 0 4px 12px rgba(99, 102, 241, 0.08) !important;
+  transition: all 0.25s ease;
+}
+
+.listen-highlight-text {
+  background: rgba(254, 240, 138, 0.7) !important;
+  color: #713f12 !important;
+  border-bottom: 2px solid #eab308 !important;
+  border-radius: 2px;
+  padding: 1px 2px;
+}
+
+/* 2. Floating / Docked Listen Player Bar */
+.studyreader-listen-bar {
+  position: sticky;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: 900px;
+  width: calc(100% - 32px);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.04);
+  padding: 14px 20px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.studyreader-listen-bar.minimized {
+  max-width: 380px;
+  padding: 8px 16px;
+}
+
+/* Top Meta & Controls Row */
+.listen-bar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.listen-track-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.listen-track-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.listen-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.listen-track-subtitle {
+  font-size: 11.5px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Main Transport Buttons */
+.listen-transport-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.listen-btn {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.listen-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+  transform: scale(1.04);
+}
+
+.listen-btn:active {
+  transform: scale(0.96);
+}
+
+.listen-btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #ffffff;
+  border: none;
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.35);
+}
+
+.listen-btn-primary:hover {
+  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.45);
+}
+
+/* Progress Slider & Time */
+.listen-scrubber-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.listen-time {
+  font-size: 11.5px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #64748b;
+  min-width: 44px;
+  text-align: center;
+}
+
+.listen-slider-track {
+  flex: 1;
+  position: relative;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 9999px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.listen-slider-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #4f46e5);
+  border-radius: 9999px;
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+/* Secondary Options Row (Voice, Speed, Timer, Bookmarks) */
+.listen-options-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #f1f5f9;
+  font-size: 12px;
+}
+
+.listen-select-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.listen-select {
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  background: #ffffff;
+  cursor: pointer;
+  outline: none;
+}
+
+.listen-select:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.listen-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.listen-pill-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.listen-pill-btn.active {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+
+/* 3. Smart Resume Notification Banner */
+.listen-resume-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  padding: 10px 16px;
+  margin: 12px 16px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.08);
+  animation: slideDown 0.3s ease;
+}
+
+.listen-resume-text {
+  font-size: 13px;
+  color: #312e81;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.listen-resume-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 4. Bookmarks & Notes Drawer Modal */
+.listen-drawer {
+  position: fixed;
+  right: -380px;
+  top: 0;
+  bottom: 0;
+  width: 360px;
+  background: #ffffff;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.listen-drawer.open {
+  right: 0;
+}
+
+.listen-drawer-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.listen-drawer-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.listen-bookmark-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.listen-bookmark-card:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+/* 5. Focus Mode Overlay */
+body.listen-focus-mode .pdf-study-sidebar,
+body.listen-focus-mode .pdf-study-header,
+body.listen-focus-mode .viewer-toolbar {
+  opacity: 0.15;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+body.listen-focus-mode .studyreader-listen-bar {
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+  border-color: #6366f1;
+}
+
+/* Responsive Rules for Small Devices */
+@media (max-width: 640px) {
+  .studyreader-listen-bar {
+    bottom: 8px;
+    width: calc(100% - 16px);
+    padding: 10px 14px;
+  }
+  .listen-options-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

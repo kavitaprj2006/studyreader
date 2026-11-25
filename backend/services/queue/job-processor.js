@@ -29,6 +29,7 @@ class JobProcessor {
     this.workerId = `worker-${process.pid}-${Math.random().toString(36).substring(2, 7)}`;
     this.isPolling = false;
     this.pollTimer = null;
+    documentProcessor.setDatabasePool(pool, cloudStorage);
   }
 
   /**
@@ -240,7 +241,7 @@ class JobProcessor {
 
       // 3. Extract text and page structure
       await this.updateProgress(jobId, pdfId, 45, "processing");
-      const extracted = await documentProcessor.extractDocument(tempFile, pdf.original_filename);
+      const extracted = await documentProcessor.extractDocument(tempFile, pdf.original_filename, { pdfId });
       const pages = documentProcessor.toPageChunks(extracted);
       const pageCount = extracted.pageCount > 0 ? extracted.pageCount : 1;
 

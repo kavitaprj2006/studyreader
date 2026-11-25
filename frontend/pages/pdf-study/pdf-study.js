@@ -673,6 +673,18 @@ async function loadSelectedPDF() {
       throw new Error(`Unsupported document format: ${currentDocumentType}`);
     }
 
+    // Initialize StudyReader Listen Player and check Smart Resume
+    if (window.StudyReaderListenPlayer && currentPdfId) {
+      window.StudyReaderListenPlayer.init({
+        documentId: currentPdfId,
+        onPageChange: (targetPage) => {
+          if (targetPage >= 1 && targetPage <= totalPages && targetPage !== currentPage) {
+            goToPage(targetPage);
+          }
+        }
+      });
+    }
+
   } catch (error) {
     console.error("Failed to load document:", error);
     showError(error.message || "Unable to open this document.");
@@ -894,6 +906,18 @@ function connectTextSelection() {
       setActiveStudyTool("ask-ai");
       switchAiView("chat");
       sendChatMessage(`Can you explain this part of the document in simple, intuitive terms with an example if applicable:\n\n"${textToExplain}"`);
+    });
+  }
+
+  const btnListenSelection = document.getElementById("btn-listen-selection");
+  if (btnListenSelection) {
+    btnListenSelection.addEventListener("click", () => {
+      if (!currentSelectionText) return;
+      const textToSpeak = currentSelectionText;
+      hideSelectionPopup();
+      if (window.StudyReaderListenPlayer) {
+        window.StudyReaderListenPlayer.speakWithBrowserVoice(textToSpeak);
+      }
     });
   }
 
@@ -1555,6 +1579,21 @@ async function handleStudyTool(tool) {
       documentAiPanel.hidden = true;
       documentAiPanel.style.display = "none";
     }
+    if (window.StudyReaderListenPlayer && currentPdfId) {
+      window.StudyReaderListenPlayer.init({
+        documentId: currentPdfId,
+        onPageChange: (targetPage) => {
+          if (targetPage >= 1 && targetPage <= totalPages && targetPage !== currentPage) {
+            goToPage(targetPage);
+          }
+        }
+      });
+      const listenContainer = document.getElementById("studyreader-listen-container");
+      if (listenContainer) {
+        listenContainer.style.display = "flex";
+      }
+      return;
+    }
     if (readAloudPanel) {
       readAloudPanel.hidden = false;
       readAloudPanel.style.display = "flex";
@@ -1602,6 +1641,25 @@ async function getPdfReadingSections() {
       text
     });
   }
+
+  // Fallback for scanned/handwritten image PDFs where client-side textLayer has no selectable text
+  if (!sections.some((s) => s.text) && currentPdfId) {
+    try {
+      const blocksRes = await fetch(`${API_BASE_URL}/api/listen/document/${encodeURIComponent(currentPdfId)}/blocks`, {
+        credentials: "include"
+      });
+      if (blocksRes.ok) {
+        const data = await blocksRes.json();
+        if (data.blocks && data.blocks.length > 0) {
+          return data.blocks.map((b) => ({
+            label: b.title || `Page ${b.pageNumber || 1}`,
+            text: b.spokenText || b.rawText || ""
+          }));
+        }
+      }
+    } catch (_) {}
+  }
+
   return sections;
 }
 

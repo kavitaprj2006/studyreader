@@ -13,6 +13,7 @@ const fs = require("fs");
 const os = require("os");
 const officeParser = require("officeparser");
 const documentProcessor = require("./services/document/document-processor");
+const createListenRouter = require("./routes/listen-routes");
 const piperTtsProvider =
   require("./services/tts/piper-tts-provider");
 const ragService =
@@ -147,6 +148,7 @@ const upload = multer({
 // ============================================================
 
 const { pool } = require("./db");
+documentProcessor.setDatabasePool(pool, cloudStorage);
 
 // Initialize Background Job Processor
 const jobProcessor = new JobProcessor(pool);
@@ -3333,7 +3335,23 @@ app.get(
 );
 
 // ============================================================
-// NEURAL READ ALOUD AUDIO
+// STUDYREADER LISTEN — COMPLETE NATURAL AUDIO & READING ENGINE
+// ============================================================
+
+app.use(
+  "/api/listen",
+  createListenRouter({
+    pool,
+    cloudStorage,
+    canAccessDocument,
+    requireAuth,
+    documentProcessor,
+    getDocumentLocalPath
+  })
+);
+
+// ============================================================
+// NEURAL READ ALOUD AUDIO (BACKWARDS COMPATIBILITY)
 // ============================================================
 
 app.get(
@@ -4922,6 +4940,58 @@ app.get("/api/admin/metrics", requireAuth, requireRole(["admin"]), async (req, r
       success: false,
       message: "Unable to retrieve system metrics."
     });
+  }
+});
+
+app.get("/api/admin/listen/metrics", requireAuth, requireRole(["admin"]), async (req, res) => {
+  try {
+    const audioStats = await pool.query(`
+      SELECT
+        COUNT(*)::int as total_chunks,
+        COUNT(DISTINCT pdf_id)::int as documents_with_audio,
+        COALESCE(SUM(file_size_bytes), 0)::bigint as total_audio_bytes,
+        COALESCE(SUM(duration_seconds), 0)::numeric(10,2) as total_duration_seconds
+      FROM audio_chunks_cache
+    `);
+
+    const ocrStats = await pool.query(`
+      SELECT
+        COUNT(DISTINCT pdf_id)::int as ocr_documents,
+        COUNT(*)::int as total_pages,
+        COUNT(CASE WHEN is_scanned = TRUE THEN 1 END)::int as scanned_pages,
+        COUNT(CASE WHEN ocr_applied = TRUE THEN 1 END)::int as ocr_applied_pages,
+        COUNT(CASE WHEN confidence_score < 60 THEN 1 END)::int as low_confidence_pages,
+        COALESCE(AVG(CASE WHEN ocr_applied = TRUE THEN confidence_score END), 0)::numeric(5,2) as avg_confidence,
+        COALESCE(AVG(processing_time_ms), 0)::numeric(8,2) as avg_processing_time_ms
+      FROM ocr_page_metadata
+    `);
+
+    const listenStats = await pool.query(`
+      SELECT
+        COUNT(DISTINCT user_id)::int as unique_listeners,
+        COUNT(*)::int as total_listening_sessions,
+        COALESCE(SUM(total_listened_seconds), 0)::int as total_listened_seconds
+      FROM listening_history
+    `);
+
+    const ocrMetadataRecent = await pool.query(`
+      SELECT opm.id, opm.pdf_id, p.original_filename, opm.page_number, opm.is_scanned, opm.ocr_applied, opm.confidence_score, opm.language, opm.processing_time_ms, opm.created_at
+      FROM ocr_page_metadata opm
+      LEFT JOIN pdfs p ON opm.pdf_id = p.id
+      ORDER BY opm.created_at DESC
+      LIMIT 10
+    `);
+
+    return res.status(200).json({
+      success: true,
+      audio: audioStats.rows[0],
+      ocr: ocrStats.rows[0],
+      listening: listenStats.rows[0],
+      recentOcrPages: ocrMetadataRecent.rows
+    });
+  } catch (err) {
+    console.error("Admin listen metrics error:", err);
+    return res.status(500).json({ success: false, message: "Unable to retrieve listen telemetry." });
   }
 });
 

@@ -12,6 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const mammoth = require("mammoth");
 const JSZip = require("jszip");
+const OCRService = require("../ocr/ocr-service");
 
 // Helper to decode XML entities
 function decodeXmlEntities(str) {
@@ -187,13 +188,22 @@ function escapeHtml(str) {
  * Unified Document Processor class
  */
 class DocumentProcessor {
+  constructor(pool = null, cloudStorage = null) {
+    this.ocrService = new OCRService(pool, cloudStorage);
+  }
+
+  setDatabasePool(pool, cloudStorage = null) {
+    this.ocrService = new OCRService(pool, cloudStorage);
+  }
+
   /**
    * Main extraction entrypoint. Detects format and routes to appropriate extractor.
    * @param {string} filePath - Absolute or relative path to file on disk.
    * @param {string} [originalFilename=""] - Original uploaded filename.
+   * @param {object} [options={}] - Processing options (pdfId, language, etc.)
    * @returns {Promise<{ fileType: string, title: string, pageCount: number, sections: Array, fullText: string, formattedHtml: string }>}
    */
-  async extractDocument(filePath, originalFilename = "") {
+  async extractDocument(filePath, originalFilename = "", options = {}) {
     const ext = path.extname(originalFilename || filePath).toLowerCase();
     const filename = path.basename(originalFilename || filePath);
 
@@ -202,7 +212,7 @@ class DocumentProcessor {
     } else if (ext === ".pptx") {
       return this.extractPptx(filePath, filename);
     } else if (ext === ".pdf") {
-      return this.extractPdf(filePath, filename);
+      return this.extractPdf(filePath, filename, options);
     } else {
       throw new Error(`Unsupported document format '${ext}'. StudyReader supports PDF, DOCX, and PPTX.`);
     }
@@ -402,38 +412,103 @@ class DocumentProcessor {
   }
 
   /**
-   * PDF extractor retaining page-based structure.
+   * PDF extractor retaining page-based structure and supporting scanned page OCR.
    */
-  async extractPdf(filePath, originalFilename) {
+  async extractPdf(filePath, originalFilename, options = {}) {
     try {
       const officeParser = require("officeparser");
-      const ast = await officeParser.parseOffice(filePath);
-      const sections = [];
+      let ast = null;
+      try {
+        ast = await officeParser.parseOffice(filePath);
+      } catch (parserErr) {
+        console.warn(`[DocumentProcessor] officeparser notice for ${originalFilename}:`, parserErr.message);
+      }
+
+      const initialPages = new Map();
 
       if (ast && Array.isArray(ast.content) && ast.content.length > 0) {
         ast.content.forEach((node, idx) => {
           const text = cleanText(node.text);
+          const pageNum = Number(node.metadata?.pageNumber) || (idx + 1);
           if (text) {
-            const pageNum = Number(node.metadata?.pageNumber) || (idx + 1);
-            sections.push({
-              pageNumber: pageNum,
-              text,
-              title: `Page ${pageNum}`
-            });
+            initialPages.set(pageNum, text);
           }
         });
       }
 
-      if (sections.length === 0 && ast) {
-        const parsed = await ast.to("text");
-        const fallbackText = cleanText(parsed?.value);
-        if (fallbackText) {
-          sections.push({
-            pageNumber: 1,
-            text: fallbackText,
-            title: "Page 1"
-          });
+      if (initialPages.size === 0 && ast) {
+        try {
+          const parsed = await ast.to("text");
+          const fallbackText = cleanText(parsed?.value);
+          if (fallbackText) {
+            initialPages.set(1, fallbackText);
+          }
+        } catch (_) {}
+      }
+
+      // Check total pages in the PDF file using pdfjs-dist
+      let totalDocPages = initialPages.size > 0 ? Math.max(...Array.from(initialPages.keys())) : 1;
+      try {
+        const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        const data = new Uint8Array(fs.readFileSync(filePath));
+        const doc = await pdfjs.getDocument({ data, disableFontFace: true }).promise;
+        if (doc && doc.numPages > 0) {
+          totalDocPages = Math.max(totalDocPages, doc.numPages);
         }
+      } catch (pdfjsErr) {
+        console.warn("[DocumentProcessor] Could not probe total pages with pdfjs:", pdfjsErr.message);
+      }
+
+      // Build complete page list 1..totalDocPages
+      const rawPages = [];
+      for (let p = 1; p <= totalDocPages; p++) {
+        rawPages.push({
+          pageNumber: p,
+          text: initialPages.get(p) || "",
+          title: `Page ${p}`
+        });
+      }
+
+      // Check whether any pages require OCR
+      const ocrInstance = options.ocrService || this.ocrService;
+      let sections = [];
+      let ocrStats = null;
+
+      const hasScannedPages = rawPages.some(rp => ocrInstance.detectScannedPage(rp.text).isScanned);
+
+      if (hasScannedPages) {
+        console.log(`[DocumentProcessor] Scanned/insufficient pages detected in ${originalFilename}. Triggering OCR pipeline...`);
+        const ocrResult = await ocrInstance.processPdf(filePath, rawPages, options);
+        sections = ocrResult.pages.map(p => ({
+          pageNumber: p.pageNumber,
+          text: p.text,
+          title: `Page ${p.pageNumber}`,
+          isScanned: p.isScanned,
+          ocrApplied: p.ocrApplied,
+          confidence: p.confidenceScore
+        }));
+        ocrStats = ocrResult.stats;
+      } else {
+        sections = rawPages.map(p => ({
+          pageNumber: p.pageNumber,
+          text: p.text,
+          title: `Page ${p.pageNumber}`,
+          isScanned: false,
+          ocrApplied: false,
+          confidence: 100.0
+        }));
+      }
+
+      // Fallback if somehow empty
+      if (sections.length === 0) {
+        sections.push({
+          pageNumber: 1,
+          text: originalFilename,
+          title: "Page 1",
+          isScanned: false,
+          ocrApplied: false,
+          confidence: 100.0
+        });
       }
 
       const fullText = sections.map(s => s.text).join("\n\n");
@@ -441,9 +516,10 @@ class DocumentProcessor {
       return {
         fileType: "pdf",
         title: originalFilename,
-        pageCount: sections.length > 0 ? sections.length : 1,
+        pageCount: sections.length,
         sections,
         fullText,
+        ocrStats,
         formattedHtml: "" // PDFs are rendered via PDF.js canvas
       };
 

@@ -297,6 +297,10 @@
           <span class="nav-icon">🧠</span>
           <span>ML Classifier</span>
         </a>
+        <a href="#listen" class="nav-item" data-tab="listen">
+          <span class="nav-icon">🎧</span>
+          <span>Audio &amp; OCR</span>
+        </a>
         <a href="#logs" class="nav-item" data-tab="logs">
           <span class="nav-icon">📜</span>
           <span>Audit Logs</span>
@@ -953,6 +957,110 @@
         </div>
 
         <!-- ========================================== -->
+        <!-- VIEW: AUDIO & OCR (STUDYREADER LISTEN)     -->
+        <!-- ========================================== -->
+        <div id="view-listen" class="admin-view-panel">
+          <div style="display: flex; flex-direction: column; gap: 24px;">
+
+            <!-- TTS Audio Subsystem Metrics -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>Neural Text-to-Speech (TTS) Operational Metrics</h2>
+                  <p>Real-time audio cache hits, storage volume, and listener engagement</p>
+                </div>
+              </div>
+              <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Cached Audio Chunks</span>
+                  <div class="metric-value" id="listen-stat-chunks" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Reusable SHA-256 MP3s</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Total Audio Duration</span>
+                  <div class="metric-value" id="listen-stat-duration" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0m</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Synthesized speech duration</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Documents with Audio</span>
+                  <div class="metric-value" id="listen-stat-docs" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Active listenable files</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Student Listeners</span>
+                  <div class="metric-value" id="listen-stat-listeners" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Active listening sessions</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- OCR & Scanned Document Intelligence -->
+            <section class="dashboard-card">
+              <div class="card-header">
+                <div>
+                  <h2>OCR &amp; Scanned Document Processing Intelligence</h2>
+                  <p>Tesseract.js page extraction accuracy, confidence tracking, and scanned page detection</p>
+                </div>
+              </div>
+              <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px;">
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Inspected Pages</span>
+                  <div class="metric-value" id="ocr-stat-total-pages" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Across uploaded PDFs</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Scanned Pages Detected</span>
+                  <div class="metric-value" id="ocr-stat-scanned" style="font-size: 24px; font-weight: 800; color: #f59e0b; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Pages lacking digital text</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">OCR Applied Pages</span>
+                  <div class="metric-value" id="ocr-stat-applied" style="font-size: 24px; font-weight: 800; color: #6366f1; margin: 4px 0;">0</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Engine extractions run</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Average Confidence</span>
+                  <div class="metric-value" id="ocr-stat-confidence" style="font-size: 24px; font-weight: 800; color: #10b981; margin: 4px 0;">0%</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Tesseract quality score</span>
+                </div>
+                <div class="metric-card" style="background: var(--surface); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
+                  <span class="metric-label" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">Avg OCR Latency</span>
+                  <div class="metric-value" id="ocr-stat-time" style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">0ms</div>
+                  <span class="metric-subtext" style="font-size: 11px; color: #64748b;">Per-page processing time</span>
+                </div>
+              </div>
+
+              <!-- Recent OCR Activity Table -->
+              <div style="margin-top: 24px;">
+                <h3 style="font-size: 14px; margin-bottom: 12px; font-weight: 700;">Recent Scanned Page OCR Activity</h3>
+                <div style="overflow-x: auto;">
+                  <table class="admin-table">
+                    <thead>
+                      <tr>
+                        <th>Date &amp; Time</th>
+                        <th>Document</th>
+                        <th>Page #</th>
+                        <th>Status</th>
+                        <th>OCR Applied</th>
+                        <th>Confidence</th>
+                        <th>Language</th>
+                        <th>Latency</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ocr-pages-table-body">
+                      <tr>
+                        <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 20px;">No scanned pages processed yet.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
+          </div>
+        </div>
+
+        <!-- ========================================== -->
         <!-- VIEW 7: AUDIT LOGS                        -->
         <!-- ========================================== -->
         <div id="view-logs" class="admin-view-panel">
@@ -1113,6 +1221,7 @@
       else if (tabId === "ai") loadAiStatus();
       else if (tabId === "cache") loadCacheAndJobs();
       else if (tabId === "ml") loadMLMetrics();
+      else if (tabId === "listen") loadListenMetrics();
       else if (tabId === "logs") loadLogs();
     }
 
@@ -1623,6 +1732,71 @@
         }
       } catch (err) {
         console.error("Load logs error:", err);
+      }
+    }
+
+    // 7. Audio & OCR (StudyReader Listen) Telemetry
+    async function loadListenMetrics() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/admin/listen/metrics`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Audio TTS metrics
+        const audio = data.audio || {};
+        const elChunks = document.getElementById("listen-stat-chunks");
+        if (elChunks) elChunks.textContent = audio.total_chunks || 0;
+
+        const elDuration = document.getElementById("listen-stat-duration");
+        const mins = Math.round((Number(audio.total_duration_seconds) || 0) / 60);
+        if (elDuration) elDuration.textContent = `${mins}m`;
+
+        const elDocs = document.getElementById("listen-stat-docs");
+        if (elDocs) elDocs.textContent = audio.documents_with_audio || 0;
+
+        const elListeners = document.getElementById("listen-stat-listeners");
+        if (elListeners) elListeners.textContent = data.listening?.unique_listeners || 0;
+
+        // OCR metrics
+        const ocr = data.ocr || {};
+        const elPages = document.getElementById("ocr-stat-total-pages");
+        if (elPages) elPages.textContent = ocr.total_pages || 0;
+
+        const elScanned = document.getElementById("ocr-stat-scanned");
+        if (elScanned) elScanned.textContent = ocr.scanned_pages || 0;
+
+        const elApplied = document.getElementById("ocr-stat-applied");
+        if (elApplied) elApplied.textContent = ocr.ocr_applied_pages || 0;
+
+        const elConf = document.getElementById("ocr-stat-confidence");
+        if (elConf) elConf.textContent = `${ocr.avg_confidence || 0}%`;
+
+        const elTime = document.getElementById("ocr-stat-time");
+        if (elTime) elTime.textContent = `${Math.round(ocr.avg_processing_time_ms || 0)}ms`;
+
+        // Recent OCR Table
+        const tbody = document.getElementById("ocr-pages-table-body");
+        const recent = data.recentOcrPages || [];
+        if (tbody) {
+          if (recent.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 20px;">No scanned pages processed yet.</td></tr>`;
+          } else {
+            tbody.innerHTML = recent.map(r => `
+              <tr>
+                <td>${new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}</td>
+                <td><strong>${escapeHTML(r.original_filename || `Doc #${r.pdf_id}`)}</strong></td>
+                <td>Page ${r.page_number}</td>
+                <td><span class="role-badge ${r.is_scanned ? 'student' : 'teacher'}">${r.is_scanned ? 'Scanned' : 'Digital'}</span></td>
+                <td>${r.ocr_applied ? '✔ Applied' : '—'}</td>
+                <td><strong style="color: ${Number(r.confidence_score) >= 70 ? '#10b981' : '#f59e0b'};">${r.confidence_score}%</strong></td>
+                <td><span class="code-pill">${r.language || 'eng'}</span></td>
+                <td>${r.processing_time_ms || 0}ms</td>
+              </tr>
+            `).join("");
+          }
+        }
+      } catch (err) {
+        console.warn("Could not load listen metrics:", err.message);
       }
     }
 
