@@ -50,32 +50,36 @@ function createListenRouter({ pool, cloudStorage, canAccessDocument, requireAuth
       pronRes.rows.forEach(r => { userOverrides[r.term] = r.phonetic_spoken; });
 
       // Fast-path: Check if document chunks are already stored in database (from JobProcessor/OCR)
-      const chunksRes = await pool.query(
-        "SELECT page_number, chunk_text, chunk_index FROM pdf_chunks WHERE pdf_id = $1 ORDER BY chunk_index ASC",
-        [document.id]
-      );
-
       let sections = [];
       let fileType = "pdf";
       let pageCount = 1;
 
-      if (chunksRes.rows && chunksRes.rows.length > 0) {
-        const pageMap = new Map();
-        chunksRes.rows.forEach(c => {
-          const p = c.page_number || 1;
-          if (!pageMap.has(p)) pageMap.set(p, []);
-          if (c.chunk_text && c.chunk_text.trim()) {
-            pageMap.get(p).push(c.chunk_text.trim());
-          }
-        });
-        for (const [pageNum, textArr] of pageMap.entries()) {
-          sections.push({
-            pageNumber: pageNum,
-            title: `Page ${pageNum}`,
-            text: textArr.join("\n\n")
+      try {
+        const chunksRes = await pool.query(
+          "SELECT chunk_index, page_start, page_end, content FROM pdf_chunks WHERE pdf_id = $1 ORDER BY chunk_index ASC",
+          [document.id]
+        );
+
+        if (chunksRes.rows && chunksRes.rows.length > 0) {
+          const pageMap = new Map();
+          chunksRes.rows.forEach(c => {
+            const p = c.page_start || 1;
+            if (!pageMap.has(p)) pageMap.set(p, []);
+            if (c.content && c.content.trim()) {
+              pageMap.get(p).push(c.content.trim());
+            }
           });
+          for (const [pageNum, textArr] of pageMap.entries()) {
+            sections.push({
+              pageNumber: pageNum,
+              title: `Page ${pageNum}`,
+              text: textArr.join("\n\n")
+            });
+          }
+          pageCount = sections.length;
         }
-        pageCount = sections.length;
+      } catch (chunkErr) {
+        console.warn("[ListenAPI] pdf_chunks query error, falling back to extraction:", chunkErr.message);
       }
 
       // Fallback: If no stored chunks, extract document text using documentProcessor

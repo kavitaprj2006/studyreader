@@ -439,6 +439,7 @@ function createReadingBlocks(extractedSections, docId = "doc", userOverrides = {
       blocks.push({
         id: blockId,
         pageNumber: pageNum,
+        title: section.title || `Page ${pageNum}`,
         blockIndex: paraIdx,
         type: blockType,
         rawText: para,
