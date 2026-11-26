@@ -167,11 +167,17 @@ function createListenRouter({ pool, cloudStorage, canAccessDocument, requireAuth
 
     } catch (err) {
       console.error("[ListenAPI] Synthesis error:", err);
-      return res.status(200).json({
-        success: true,
-        useClientSynthesis: true,
-        normalizedText: text,
-        fallbackReason: err.message || "Speech synthesis provider unavailable."
+      const isQuota = (err.message || "").includes("429") || (err.message || "").includes("allocation");
+      return res.status(503).json({
+        success: false,
+        error: isQuota ? "QUOTA_EXCEEDED" : "PROVIDER_ERROR",
+        message: isQuota
+          ? "Cloudflare Neural Studio daily limit reached. You can switch to a device neural voice or retry."
+          : (err.message || "Speech synthesis failed."),
+        voice,
+        suggestedFallback: (voice.includes("male") && !voice.includes("female"))
+          ? { id: "browser:en-US-Guy", name: "Microsoft Guy (Device — Male)", gender: "male" }
+          : { id: "browser:en-US-Jenny", name: "Microsoft Jenny (Device — Female)", gender: "female" }
       });
     }
   });
@@ -311,6 +317,37 @@ function createListenRouter({ pool, cloudStorage, canAccessDocument, requireAuth
     } catch (err) {
       console.error("[ListenAPI] Bookmark save error:", err);
       return res.status(500).json({ success: false, message: "Failed to save bookmark." });
+    }
+  });
+
+  router.put("/bookmarks/:id/:bookmarkId", requireAuth, async (req, res) => {
+    try {
+      const document = await canAccessDocument(req.params.id, req.user.id, req.user.role);
+      if (!document) {
+        return res.status(404).json({ success: false, message: "Document not found." });
+      }
+
+      const { title, note } = req.body;
+      if (!title || !title.trim()) {
+        return res.status(400).json({ success: false, message: "Title is required for bookmark." });
+      }
+
+      const updateRes = await pool.query(
+        `UPDATE listening_bookmarks
+         SET title = $1, note = $2
+         WHERE id = $3 AND user_id = $4 AND pdf_id = $5
+         RETURNING id, page_number, block_id, audio_timestamp, title, note, created_at`,
+        [title.trim(), note ? note.trim() : null, req.params.bookmarkId, req.user.id, document.id]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return res.status(404).json({ success: false, message: "Bookmark not found or access denied." });
+      }
+
+      return res.status(200).json({ success: true, bookmark: updateRes.rows[0] });
+    } catch (err) {
+      console.error("[ListenAPI] Bookmark update error:", err);
+      return res.status(500).json({ success: false, message: "Failed to update bookmark." });
     }
   });
 

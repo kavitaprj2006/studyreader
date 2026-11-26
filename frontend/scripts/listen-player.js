@@ -2,16 +2,15 @@
  * StudyReader Listen — Advanced Neural Audio Player & Synchronized Highlighting
  * 
  * Features:
- * - Neural voice synthesis (Cloudflare Deepgram Aura-2) with fallback to Browser SpeechSynthesis
- * - Synchronized PDF/DOCX/PPTX sentence highlighting (Follow Along)
- * - Real-time word-level pointing while speaking (Follow Along word tracking)
+ * - Neural voice synthesis (Cloudflare Deepgram Aura-2) with verified gender-matching fallback
+ * - Exact contiguous PDF.js text-layer span mapping (Follow Along)
+ * - Word-level pointing strictly within active sentence spans
  * - Sentence-to-sentence background audio prefetch (< 1s pause between lines)
  * - Page-wise listening with manual Continue button boundary control
- * - Click-to-listen navigation
- * - Smart Resume across sessions
- * - Bookmarks & Notes drawer (non-intrusive popover above bar)
+ * - Sleek, compact player dock with non-intrusive Settings popover
+ * - Full Bookmark CRUD (Create, View, Edit, Delete, Jump-to-audio)
+ * - Click-to-listen navigation & Smart Resume
  * - Sleep timer & Focus mode
- * - Speed (0.75x - 2x) & Seek (±15s)
  */
 
 (function () {
@@ -37,9 +36,13 @@
       this.audio.preload = "auto";
       this.currentUtterance = null;
       this.audioPreloadCache = new Map();
+      this.voiceMetaMap = new Map();
       this.currentAbortController = null;
       this.nextPendingPageNum = null;
       this.sentencePauseTimer = null;
+
+      // Active sentence contiguous span tracking
+      this.activeSpanRange = null;
 
       this.elements = {};
       this.onPageChangeCallback = null;
@@ -96,7 +99,7 @@
     }
 
     /**
-     * Renders modern floating player HTML into the document study area.
+     * Renders modern compact floating player HTML into the document study area.
      */
     renderPlayerUI() {
       let existing = document.getElementById("studyreader-listen-container");
@@ -107,32 +110,19 @@
       container.className = "studyreader-listen-bar";
 
       container.innerHTML = `
-        <!-- Row 1: Document Info & Page Switcher & Actions -->
-        <div class="listen-bar-header">
+        <!-- Main Compact Control Bar -->
+        <div class="listen-compact-main-row">
+          <!-- Left: Document Info & Page Switcher -->
           <div class="listen-track-info">
-            <div class="listen-track-title">
-              <span id="listen-doc-title">🎧 StudyReader Listen</span>
-              <button type="button" id="btn-listen-prev-page" class="listen-page-nav-btn" title="Previous Page">‹</button>
-              <select id="select-listen-page" class="listen-badge" style="cursor: pointer; border: 1px solid #c7d2fe; outline: none; background: #eef2ff; color: #4338ca; padding: 2px 8px; font-weight: 700;" title="Choose page to read">
-                <option value="1">Page 1</option>
-              </select>
-              <button type="button" id="btn-listen-next-page" class="listen-page-nav-btn" title="Next Page">›</button>
-            </div>
-            <div class="listen-track-subtitle">
-              <span id="listen-block-label">Loading natural reading blocks...</span>
-              <span id="listen-sleep-badge" style="display: none;" class="listen-badge">⏳ 15m</span>
-            </div>
+            <span id="listen-doc-title" class="listen-track-title">🎧 Listen</span>
+            <button type="button" id="btn-listen-prev-page" class="listen-page-nav-btn" title="Previous Page">‹</button>
+            <select id="select-listen-page" class="listen-badge" title="Choose page to read">
+              <option value="1">Page 1</option>
+            </select>
+            <button type="button" id="btn-listen-next-page" class="listen-page-nav-btn" title="Next Page">›</button>
           </div>
 
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <button type="button" id="btn-listen-bookmark" class="listen-pill-btn" title="View or Add Bookmarks">🔖 Mark</button>
-            <button type="button" id="btn-listen-focus" class="listen-pill-btn" title="Distraction-Free Focus Mode">🎯 Focus</button>
-            <button type="button" id="btn-listen-close" class="listen-btn" style="width: 28px; height: 28px; font-size: 11px;" title="Close Player">✕</button>
-          </div>
-        </div>
-
-        <!-- Row 2: Main Transport Controls Centered -->
-        <div class="listen-transport-row">
+          <!-- Center: Main Transport Controls -->
           <div class="listen-transport-controls">
             <button type="button" id="btn-listen-prev-sent" class="listen-btn" title="Previous Sentence">⏮</button>
             <button type="button" id="btn-listen-seek-back" class="listen-btn" title="Back 15s">↺ 15</button>
@@ -140,30 +130,48 @@
             <button type="button" id="btn-listen-seek-fwd" class="listen-btn" title="Forward 15s">15 ↻</button>
             <button type="button" id="btn-listen-next-sent" class="listen-btn" title="Next Sentence">⏭</button>
             <button type="button" id="btn-listen-stop" class="listen-btn" title="Stop">⏹</button>
-            <button type="button" id="btn-listen-continue-page" class="listen-pill-btn listen-btn-primary" style="display: none; padding: 6px 14px; font-weight: 700; margin-left: 6px;" title="Continue to Next Page">▶ Continue Page</button>
+            <button type="button" id="btn-listen-continue-page" class="listen-pill-btn listen-btn-primary" style="display: none; padding: 4px 10px; font-weight: 700;" title="Continue to Next Page">▶ Continue</button>
+          </div>
+
+          <!-- Scrubber / Progress Bar -->
+          <div class="listen-progress-row">
+            <span id="listen-time-elapsed" class="listen-time">0:00</span>
+            <div class="listen-slider-container" id="listen-slider-track">
+              <div class="listen-slider-fill" id="listen-slider-fill"></div>
+            </div>
+            <span id="listen-time-remaining" class="listen-time">-0:00</span>
+          </div>
+
+          <!-- Right: Actions -->
+          <div class="listen-actions-group">
+            <button type="button" id="btn-listen-settings" class="listen-pill-btn" title="Audio Settings">⚙️ Settings</button>
+            <button type="button" id="btn-listen-bookmark" class="listen-pill-btn" title="Bookmarks & Notes">🔖 Mark</button>
+            <button type="button" id="btn-listen-close" class="listen-btn" style="width: 26px; height: 26px; font-size: 11px;" title="Close Player">✕</button>
           </div>
         </div>
 
-        <!-- Row 3: Progress Slider -->
-        <div class="listen-progress-row">
-          <span id="listen-time-elapsed" class="listen-time">0:00</span>
-          <div class="listen-slider-container" id="listen-slider-track">
-            <div class="listen-slider-fill" id="listen-slider-fill"></div>
-          </div>
-          <span id="listen-time-remaining" class="listen-time">-0:00</span>
+        <!-- Subtitle: Realtime Sentence & Error Status -->
+        <div class="listen-track-subtitle">
+          <span id="listen-block-label">Loading natural reading blocks...</span>
+          <span id="listen-sleep-badge" style="display: none;" class="listen-badge">⏳ 15m</span>
         </div>
 
-        <!-- Row 4: Controls Row -->
-        <div class="listen-controls-row">
-          <div class="listen-select-group">
+        <!-- Settings Popover (Floats cleanly above player bar) -->
+        <div id="listen-settings-popover" class="listen-settings-popover">
+          <div class="listen-popover-head">
+            <h4 class="listen-popover-title">⚙️ Audio & Reading Settings</h4>
+            <button type="button" id="btn-close-settings" class="listen-btn" style="width: 22px; height: 22px; font-size: 10px;">✕</button>
+          </div>
+
+          <div class="listen-setting-row">
             <span class="listen-label">Voice:</span>
-            <select id="select-listen-voice" class="listen-select" style="max-width: 200px;">
+            <select id="select-listen-voice" class="listen-select">
               <option value="cf:luna">Luna (Neural Studio — Female)</option>
               <option value="cf:orion">Orion (Neural Studio — Male)</option>
             </select>
           </div>
 
-          <div class="listen-select-group">
+          <div class="listen-setting-row">
             <span class="listen-label">Speed:</span>
             <select id="select-listen-speed" class="listen-select">
               <option value="0.75">0.75x</option>
@@ -175,8 +183,8 @@
             </select>
           </div>
 
-          <div class="listen-select-group">
-            <span class="listen-label">Sleep:</span>
+          <div class="listen-setting-row">
+            <span class="listen-label">Sleep Timer:</span>
             <select id="select-listen-sleep" class="listen-select">
               <option value="off" selected>Off</option>
               <option value="15">15m</option>
@@ -186,19 +194,20 @@
             </select>
           </div>
 
-          <div style="display: flex; gap: 8px; margin-left: auto;">
+          <div style="display: flex; gap: 8px; margin-top: 4px; justify-content: flex-end;">
             <button type="button" id="btn-toggle-follow" class="listen-pill-btn active" title="Toggle Synchronized Highlighting">✨ Follow Along</button>
+            <button type="button" id="btn-listen-focus" class="listen-pill-btn" title="Distraction-Free Focus Mode">🎯 Focus</button>
             <button type="button" id="btn-listen-ai-explain" class="listen-pill-btn" title="Ask AI Tutor to explain active sentence">🤖 Explain</button>
           </div>
         </div>
 
-        <!-- Bookmarks Drawer (Positioned above bar as popup, non-intrusive) -->
+        <!-- Bookmarks Drawer / Popover (Floats cleanly above player bar) -->
         <div id="listen-bookmarks-drawer" class="listen-drawer">
           <div class="listen-drawer-head">
-            <h3 style="margin: 0; font-size: 14px; font-weight: 700; color: #0f172a;">🔖 Bookmarks</h3>
+            <h4 class="listen-popover-title">🔖 Bookmarks & Notes</h4>
             <div style="display: flex; gap: 6px; align-items: center;">
               <button type="button" id="btn-add-bookmark-action" class="listen-pill-btn" style="padding: 2px 8px; font-size: 11px;">+ New</button>
-              <button type="button" id="btn-close-drawer" class="listen-btn" style="width: 24px; height: 24px; font-size: 11px;">✕</button>
+              <button type="button" id="btn-close-drawer" class="listen-btn" style="width: 22px; height: 22px; font-size: 10px;">✕</button>
             </div>
           </div>
           <div class="listen-drawer-body" id="listen-bookmarks-list">
@@ -228,6 +237,9 @@
         btnSeekBack: container.querySelector("#btn-listen-seek-back"),
         btnSeekFwd: container.querySelector("#btn-listen-seek-fwd"),
         btnStop: container.querySelector("#btn-listen-stop"),
+        btnSettings: container.querySelector("#btn-listen-settings"),
+        settingsPopover: container.querySelector("#listen-settings-popover"),
+        btnCloseSettings: container.querySelector("#btn-close-settings"),
         btnBookmark: container.querySelector("#btn-listen-bookmark"),
         btnAddBookmark: container.querySelector("#btn-add-bookmark-action"),
         btnFocus: container.querySelector("#btn-listen-focus"),
@@ -286,6 +298,7 @@
 
       el.selectVoice.addEventListener("change", (e) => {
         this.voiceId = e.target.value;
+        this.audioPreloadCache.clear();
         this.saveHistoryProgress();
         if (this.isPlaying) {
           this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
@@ -318,6 +331,15 @@
         document.body.classList.remove("listen-focus-mode");
       });
 
+      // Settings popover toggle
+      el.btnSettings.addEventListener("click", () => {
+        el.settingsPopover.classList.toggle("open");
+        if (el.drawer) el.drawer.classList.remove("open");
+      });
+      el.btnCloseSettings.addEventListener("click", () => {
+        el.settingsPopover.classList.remove("open");
+      });
+
       // Scrubbing progress track
       el.sliderTrack.addEventListener("click", (e) => {
         const rect = el.sliderTrack.getBoundingClientRect();
@@ -334,8 +356,13 @@
       }
       el.btnCloseDrawer.addEventListener("click", () => el.drawer.classList.remove("open"));
 
-      // Click outside drawer to close
+      // Click outside popovers to close
       document.addEventListener("click", (e) => {
+        if (el.settingsPopover && el.settingsPopover.classList.contains("open")) {
+          if (!el.settingsPopover.contains(e.target) && e.target !== el.btnSettings) {
+            el.settingsPopover.classList.remove("open");
+          }
+        }
         if (el.drawer && el.drawer.classList.contains("open")) {
           if (!el.drawer.contains(e.target) && e.target !== el.btnBookmark) {
             el.drawer.classList.remove("open");
@@ -354,6 +381,9 @@
       if (this.elements.drawer.classList.contains("open")) {
         this.elements.drawer.classList.remove("open");
       } else {
+        if (this.elements.settingsPopover) {
+          this.elements.settingsPopover.classList.remove("open");
+        }
         this.loadBookmarks(true);
       }
     }
@@ -372,8 +402,8 @@
         this.elements.timeElapsed.textContent = this.formatTime(current);
         this.elements.timeRemaining.textContent = `-${this.formatTime(Math.max(0, total - current))}`;
 
-        // Word-level follow-along estimate for neural audio playback
-        if (this.followAlong && total > 0) {
+        // Word-level follow-along estimate strictly within active sentence spans
+        if (this.followAlong && total > 0 && this.activeSpanRange) {
           const block = this.blocks[this.currentBlockIndex];
           const sentenceObj = block?.sentences?.[this.currentSentenceIndex];
           const raw = sentenceObj?.raw || "";
@@ -423,27 +453,34 @@
         console.warn("[ListenPlayer] Could not fetch server voices:", err.message);
       }
 
+      this.voiceMetaMap = new Map();
       const sel = this.elements.selectVoice;
       if (!sel) return;
       sel.innerHTML = "";
 
       // Server neural studio voices first
       const cfGroup = document.createElement("optgroup");
-      cfGroup.label = "Studio Neural Voices (Cloudflare)";
+      cfGroup.label = "Studio Neural Voices (Cloudflare Aura)";
 
       const browserGroup = document.createElement("optgroup");
-      browserGroup.label = "Device / Browser Voices";
+      browserGroup.label = "High-Quality Device Neural Voices";
 
       serverVoices.forEach(v => {
         if (!v) return;
+        const id = v.id || v.voice || "";
+        const name = v.name || v.label || v.displayName || id;
+        const isMale = /orion|apollo|atlas|guy|prabhat|male/i.test(id) || /male/i.test(v.gender || "");
+        const gender = isMale ? "male" : "female";
+        const meta = { id, name, gender, provider: v.provider || (id.startsWith("cf:") ? "cloudflare" : "browser"), lang: v.language || "en-US" };
+        this.voiceMetaMap.set(id, meta);
+
         const opt = document.createElement("option");
-        opt.value = v.id || v.voice || "";
-        const displayName = v.name || v.label || v.displayName || v.id || "Voice";
-        opt.textContent = `${displayName}${v.isStudio ? " ✦" : ""}`;
+        opt.value = id;
+        opt.textContent = `${name}${v.isStudio ? " ✦" : ""}`;
         if (opt.textContent.includes("undefined")) {
           opt.textContent = opt.value || "Neural Voice";
         }
-        if (v.provider === "cloudflare" || v.provider === "google" || (v.id && (v.id.startsWith("cf:") || v.id.startsWith("gcp:")))) {
+        if (meta.provider === "cloudflare" || meta.provider === "google") {
           cfGroup.appendChild(opt);
         } else {
           browserGroup.appendChild(opt);
@@ -457,6 +494,11 @@
           if (!lv) return;
           const name = lv.name || lv.voiceURI || "Device Voice";
           const id = `browser:${name}`;
+          const isFemale = /female|zira|jenny|neerja|swara|ava|emma|sonia|samantha|karen|victoria|linda|heera|sunita|kalpana/i.test(name);
+          const isMale = /male|david|guy|prabhat|madhur|mark|george|ravi|hemant/i.test(name);
+          const gender = isFemale ? "female" : (isMale ? "male" : "female");
+          this.voiceMetaMap.set(id, { id, name, gender, provider: "browser", lang: lv.lang, nativeVoice: lv });
+
           if (!browserGroup.querySelector(`option[value="${id}"]`)) {
             const opt = document.createElement("option");
             opt.value = id;
@@ -486,6 +528,31 @@
         sel.selectedIndex = 0;
         this.voiceId = sel.value;
       }
+    }
+
+    /**
+     * Resolves voice gender (male / female) from voice ID or metadata.
+     */
+    getVoiceGender(voiceId) {
+      if (this.voiceMetaMap && this.voiceMetaMap.has(voiceId)) {
+        return this.voiceMetaMap.get(voiceId).gender;
+      }
+      const lower = (voiceId || "").toLowerCase();
+      if (lower.includes("orion") || lower.includes("apollo") || lower.includes("atlas") || lower.includes("guy") || lower.includes("prabhat") || lower.includes("male")) {
+        return "male";
+      }
+      return "female";
+    }
+
+    /**
+     * Returns metadata for given voice ID.
+     */
+    getVoiceMeta(voiceId) {
+      if (this.voiceMetaMap && this.voiceMetaMap.has(voiceId)) {
+        return this.voiceMetaMap.get(voiceId);
+      }
+      const gender = this.getVoiceGender(voiceId);
+      return { id: voiceId, name: voiceId, gender };
     }
 
     /**
@@ -1077,7 +1144,10 @@
           if (!this.isPlaying || this.isPaused) return;
 
           if (!response.ok) {
-            throw new Error("Backend synthesis returned status " + response.status);
+            let errorData = null;
+            try { errorData = await response.json(); } catch (_) {}
+            this.handleNeuralProviderUnavailable(errorData || { message: "Status " + response.status }, spokenText);
+            return;
           }
 
           const contentType = response.headers.get("content-type") || "";
@@ -1097,8 +1167,8 @@
           if (!this.isPlaying || this.isPaused || err.name === "AbortError") {
             return;
           }
-          console.warn("[ListenPlayer] Neural synthesis error, falling back to browser speech:", err.message);
-          await this.speakWithBrowserVoice(spokenText);
+          console.warn("[ListenPlayer] Neural synthesis error:", err.message);
+          this.handleNeuralProviderUnavailable({ message: err.message }, spokenText);
           return;
         }
       }
@@ -1128,7 +1198,49 @@
     }
 
     /**
-     * Browser speech synthesis with word-level boundary tracking.
+     * Handles neural provider unavailability with an explicit notice, retry, and female/male device fallback.
+     */
+    handleNeuralProviderUnavailable(errorData, spokenText) {
+      this.pause();
+      const isFemale = this.getVoiceGender(this.voiceId) === "female";
+      const fallbackVoiceId = isFemale ? "browser:en-US-Jenny" : "browser:en-US-Guy";
+      const fallbackName = isFemale ? "Jenny (Female)" : "Guy (Male)";
+
+      if (this.elements.blockLabel) {
+        this.elements.blockLabel.innerHTML = `
+          <span style="color: #b45309; font-size: 11px; font-weight: 600;">
+            ⚠️ Neural quota reached.
+            <button type="button" id="btn-listen-fallback" style="background:#4f46e5; color:#fff; border:none; padding:2px 8px; border-radius:4px; font-size:11px; margin-left:6px; cursor:pointer; font-weight:700;">
+              Switch to ${fallbackName}
+            </button>
+            <button type="button" id="btn-listen-retry-neural" style="background:#e0e7ff; color:#4338ca; border:none; padding:2px 8px; border-radius:4px; font-size:11px; margin-left:4px; cursor:pointer; font-weight:600;">
+              ↺ Retry
+            </button>
+          </span>
+        `;
+
+        const btnFallback = document.getElementById("btn-listen-fallback");
+        if (btnFallback) {
+          btnFallback.onclick = () => {
+            this.voiceId = fallbackVoiceId;
+            if (this.elements.selectVoice) this.elements.selectVoice.value = fallbackVoiceId;
+            this.audioPreloadCache.clear();
+            this.play();
+          };
+        }
+
+        const btnRetry = document.getElementById("btn-listen-retry-neural");
+        if (btnRetry) {
+          btnRetry.onclick = () => {
+            this.audioPreloadCache.clear();
+            this.play();
+          };
+        }
+      }
+    }
+
+    /**
+     * Browser speech synthesis with word-level boundary tracking and strict gender verification.
      */
     speakWithBrowserVoice(text) {
       return new Promise((resolve) => {
@@ -1147,17 +1259,39 @@
         const utterance = new SpeechSynthesisUtterance(text.trim());
         utterance.rate = this.speed || 1.0;
 
+        const allVoices = window.speechSynthesis.getVoices() || [];
+        const desiredGender = this.getVoiceGender(this.voiceId);
+        let selectedVoice = null;
+
+        // 1. Direct name match if browser voice
         if (this.voiceId && this.voiceId.startsWith("browser:")) {
-          const voiceName = this.voiceId.replace("browser:", "");
-          const voices = window.speechSynthesis.getVoices() || [];
-          const matchedVoice = voices.find(v => v.name === voiceName || v.voiceURI === voiceName);
-          if (matchedVoice) {
-            utterance.voice = matchedVoice;
-            utterance.lang = matchedVoice.lang;
+          const rawTarget = this.voiceId.replace(/^browser:/, "").toLowerCase();
+          const coreName = rawTarget.replace(/^[a-z]{2}-[a-z]{2}-/i, "").toLowerCase();
+          selectedVoice = allVoices.find(v => {
+            const vName = (v.name || "").toLowerCase();
+            const vUri = (v.voiceURI || "").toLowerCase();
+            return vName === rawTarget || vUri === rawTarget || vName.includes(coreName);
+          });
+        }
+
+        // 2. Strict gender matching if not directly matched or if neural fallback
+        if (!selectedVoice && allVoices.length > 0) {
+          if (desiredGender === "female") {
+            selectedVoice = allVoices.find(v => /jenny|neerja|zira|swara|ava|emma|sonia|samantha|karen|victoria/i.test(v.name)) ||
+                            allVoices.find(v => /female/i.test(v.name)) ||
+                            allVoices.find(v => !/david|guy|male|mark|george|prabhat|madhur|ravi/i.test(v.name));
+          } else {
+            selectedVoice = allVoices.find(v => /guy|david|prabhat|madhur|mark|george/i.test(v.name)) ||
+                            allVoices.find(v => /male/i.test(v.name));
           }
         }
 
-        // Exact word pointing boundary event
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+          utterance.lang = selectedVoice.lang || "en-US";
+        }
+
+        // Exact word pointing boundary event strictly within active sentence
         utterance.onboundary = (event) => {
           if (!this.followAlong) return;
           if (event.name === "word") {
@@ -1207,8 +1341,8 @@
 
     /**
      * Synchronized Highlighting (Follow Along):
-     * Finds matching text spans in #pdf-text-layer (or .docx-section-block / .pptx-slide-card)
-     * and highlights them with luminous styling while smooth scrolling into view.
+     * Finds the exact contiguous span range [startSpanIdx ... endSpanIdx]
+     * matching the spoken sentence in PDF.js text layer (or card blocks).
      */
     highlightCurrentSentence() {
       this.clearHighlights();
@@ -1220,24 +1354,26 @@
       const rawSentence = (sentenceObj?.raw || "").trim();
       if (!rawSentence) return;
 
-      // 1. PDF Text Layer Highlighting
+      // 1. PDF Text Layer Contiguous Span Mapping
       const textLayer = document.getElementById("pdf-text-layer");
       if (textLayer) {
         const spans = Array.from(textLayer.querySelectorAll("span"));
-        const cleanWords = rawSentence.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w.length >= 3);
+        const match = this.findContiguousSpanRange(spans, rawSentence);
 
-        let firstMatchSpan = null;
-        for (const span of spans) {
-          const spanText = (span.textContent || "").toLowerCase();
-          const hitCount = cleanWords.filter(cw => spanText.includes(cw)).length;
-          if (hitCount > 0) {
-            span.classList.add("listen-highlight-sentence");
-            if (!firstMatchSpan) firstMatchSpan = span;
+        if (match && match.startSpanIdx !== undefined) {
+          this.activeSpanRange = {
+            spans: spans.slice(match.startSpanIdx, match.endSpanIdx + 1),
+            startIdx: match.startSpanIdx,
+            endIdx: match.endSpanIdx
+          };
+
+          for (let i = match.startSpanIdx; i <= match.endSpanIdx && i < spans.length; i++) {
+            spans[i].classList.add("listen-highlight-sentence");
           }
-        }
 
-        if (firstMatchSpan) {
-          firstMatchSpan.scrollIntoView({ behavior: "smooth", block: "center" });
+          if (spans[match.startSpanIdx]) {
+            spans[match.startSpanIdx].scrollIntoView({ behavior: "smooth", block: "center" });
+          }
         }
       }
 
@@ -1256,7 +1392,107 @@
     }
 
     /**
-     * Highlights the active spoken word with a luminous yellow glow (Word Follow-Along).
+     * Finds the exact contiguous span range [startSpanIdx, endSpanIdx]
+     * in the PDF text layer that corresponds to the given sentence text.
+     */
+    findContiguousSpanRange(spans, targetSentence) {
+      if (!spans || spans.length === 0 || !targetSentence || !targetSentence.trim()) {
+        return null;
+      }
+
+      const targetTokens = targetSentence
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+
+      if (targetTokens.length === 0) return null;
+
+      // Build token stream preserving span indices
+      const spanTokens = [];
+      spans.forEach((span, spanIdx) => {
+        const text = (span.textContent || "")
+          .toLowerCase()
+          .replace(/[^\w\s]/g, " ");
+        const words = text.split(/\s+/).filter(Boolean);
+        words.forEach(word => {
+          spanTokens.push({ word, spanIdx });
+        });
+      });
+
+      if (spanTokens.length === 0) return null;
+
+      let bestMatch = null;
+      let maxScore = 0;
+      const anchorTokens = targetTokens.slice(0, Math.min(3, targetTokens.length));
+
+      for (let i = 0; i < spanTokens.length; i++) {
+        let matchesAnchor = false;
+        if (spanTokens[i].word === anchorTokens[0]) {
+          matchesAnchor = true;
+          for (let a = 1; a < anchorTokens.length && (i + a) < spanTokens.length; a++) {
+            if (spanTokens[i + a].word !== anchorTokens[a]) {
+              matchesAnchor = false;
+              break;
+            }
+          }
+        }
+
+        if (matchesAnchor) {
+          let matchCount = 0;
+          let spanTokenIdx = i;
+          let targetIdx = 0;
+
+          while (targetIdx < targetTokens.length && spanTokenIdx < spanTokens.length) {
+            if (spanTokens[spanTokenIdx].word === targetTokens[targetIdx]) {
+              matchCount++;
+              targetIdx++;
+              spanTokenIdx++;
+            } else {
+              if (spanTokenIdx + 1 < spanTokens.length && spanTokens[spanTokenIdx + 1].word === targetTokens[targetIdx]) {
+                spanTokenIdx++;
+              } else {
+                targetIdx++;
+              }
+            }
+          }
+
+          if (matchCount > maxScore) {
+            maxScore = matchCount;
+            const startSpanIdx = spanTokens[i].spanIdx;
+            const endSpanIdx = spanTokens[Math.min(spanTokens.length - 1, spanTokenIdx - 1)].spanIdx;
+            bestMatch = { startSpanIdx, endSpanIdx, score: matchCount };
+          }
+        }
+      }
+
+      // Fallback: sliding anchor match
+      if (!bestMatch || maxScore < Math.min(2, targetTokens.length)) {
+        const firstWord = targetTokens[0];
+        for (let i = 0; i < spanTokens.length; i++) {
+          if (spanTokens[i].word === firstWord || spanTokens[i].word.startsWith(firstWord.slice(0, 4))) {
+            const startSpanIdx = spanTokens[i].spanIdx;
+            let endSpanIdx = startSpanIdx;
+            let t = 0;
+            let s = i;
+            while (t < targetTokens.length && s < spanTokens.length) {
+              if (spanTokens[s].word.includes(targetTokens[t]) || targetTokens[t].includes(spanTokens[s].word)) {
+                endSpanIdx = spanTokens[s].spanIdx;
+                t++;
+              }
+              s++;
+            }
+            bestMatch = { startSpanIdx, endSpanIdx };
+            break;
+          }
+        }
+      }
+
+      return bestMatch;
+    }
+
+    /**
+     * Highlights the active spoken word STRICTLY within the current sentence's span range.
      */
     highlightSpokenWord(wordText) {
       if (!this.followAlong || !wordText) return;
@@ -1266,14 +1502,10 @@
       // Clear previous word highlight
       document.querySelectorAll(".listen-highlight-word").forEach(el => el.classList.remove("listen-highlight-word"));
 
-      const textLayer = document.getElementById("pdf-text-layer");
-      if (!textLayer) return;
+      if (!this.activeSpanRange || !this.activeSpanRange.spans) return;
 
-      // Search among sentence-highlighted spans first, then all spans
-      const activeSentenceSpans = Array.from(textLayer.querySelectorAll(".listen-highlight-sentence"));
-      const targetPool = activeSentenceSpans.length > 0 ? activeSentenceSpans : Array.from(textLayer.querySelectorAll("span"));
-
-      for (const span of targetPool) {
+      // Search ONLY within the active contiguous sentence spans!
+      for (const span of this.activeSpanRange.spans) {
         const spanText = (span.textContent || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         if (spanText.includes(cleanWord)) {
           span.classList.add("listen-highlight-word");
@@ -1286,6 +1518,7 @@
      * Clears all highlighted sentences and sections.
      */
     clearHighlights() {
+      this.activeSpanRange = null;
       document.querySelectorAll(".listen-highlight-sentence").forEach(el => el.classList.remove("listen-highlight-sentence"));
       document.querySelectorAll(".listen-highlight-word").forEach(el => el.classList.remove("listen-highlight-word"));
       document.querySelectorAll(".listen-active-section").forEach(el => el.classList.remove("listen-active-section"));
@@ -1451,7 +1684,11 @@
       const pageNum = block?.pageNumber || 1;
       const sentence = block?.sentences?.[this.currentSentenceIndex]?.raw || "";
 
-      const note = prompt(`Add note for bookmark on Page ${pageNum}:\n"${sentence.slice(0, 60)}..."`, "");
+      const defaultTitle = `Bookmark: Page ${pageNum}`;
+      const title = prompt("Enter bookmark title:", defaultTitle);
+      if (!title || !title.trim()) return;
+
+      const note = prompt(`Add optional note for Page ${pageNum}:\n"${sentence.slice(0, 60)}..."`, "");
       if (note === null) return;
 
       try {
@@ -1463,13 +1700,16 @@
             pageNumber: pageNum,
             blockId: block?.blockId,
             audioTimestamp: this.audio.currentTime || 0,
-            title: `Bookmark: Page ${pageNum}`,
-            note: note || sentence.slice(0, 100)
+            title: title.trim(),
+            note: note ? note.trim() : sentence.slice(0, 100)
           })
         });
 
         if (res.ok) {
           this.loadBookmarks(true);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert("Failed to save bookmark: " + (errData.message || "Server error"));
         }
       } catch (err) {
         alert("Failed to save bookmark: " + err.message);
@@ -1477,7 +1717,7 @@
     }
 
     /**
-     * Loads saved bookmarks into the drawer.
+     * Loads saved bookmarks into the drawer with complete CRUD actions.
      */
     async loadBookmarks(openDrawer = false) {
       try {
@@ -1502,19 +1742,75 @@
           const item = document.createElement("div");
           item.className = "listen-bookmark-card";
           item.innerHTML = `
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 4px;">
+            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 12px; color: #1e293b;">
               <span>${bm.title}</span>
-              <span style="color: #6366f1;">Page ${bm.page_number}</span>
+              <span class="listen-badge" style="font-size: 10px;">Page ${bm.page_number}</span>
             </div>
-            <div style="font-size: 12px; color: #475569;">${bm.note || "No notes"}</div>
+            <div style="font-size: 11.5px; color: #475569; margin: 2px 0;">${bm.note || "No notes"}</div>
+            <div class="listen-bm-actions">
+              <button type="button" class="listen-bm-btn primary btn-bm-go">▶ Go</button>
+              <button type="button" class="listen-bm-btn btn-bm-edit">✎ Edit</button>
+              <button type="button" class="listen-bm-btn danger btn-bm-delete">🗑 Delete</button>
+            </div>
           `;
-          item.addEventListener("click", () => {
+
+          // Go button
+          item.querySelector(".btn-bm-go").addEventListener("click", () => {
             const targetBlockIdx = this.blocks.findIndex(b => b.pageNumber === bm.page_number);
             if (targetBlockIdx !== -1) {
-              this.playSentence(targetBlockIdx, 0);
+              this.jumpToPage(bm.page_number);
+              this.play();
               this.elements.drawer.classList.remove("open");
             }
           });
+
+          // Edit button
+          item.querySelector(".btn-bm-edit").addEventListener("click", async () => {
+            const newTitle = prompt("Edit bookmark title:", bm.title);
+            if (newTitle === null || !newTitle.trim()) return;
+
+            const newNote = prompt("Edit bookmark note:", bm.note || "");
+            if (newNote === null) return;
+
+            try {
+              const editRes = await fetch(`${API_BASE_URL}/api/listen/bookmarks/${encodeURIComponent(this.documentId)}/${encodeURIComponent(bm.id)}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ title: newTitle.trim(), note: newNote.trim() })
+              });
+
+              if (editRes.ok) {
+                this.loadBookmarks(true);
+              } else {
+                const errData = await editRes.json().catch(() => ({}));
+                alert("Failed to update bookmark: " + (errData.message || "Error"));
+              }
+            } catch (err) {
+              alert("Update error: " + err.message);
+            }
+          });
+
+          // Delete button
+          item.querySelector(".btn-bm-delete").addEventListener("click", async () => {
+            if (!confirm(`Delete bookmark "${bm.title}"?`)) return;
+
+            try {
+              const delRes = await fetch(`${API_BASE_URL}/api/listen/bookmarks/${encodeURIComponent(this.documentId)}/${encodeURIComponent(bm.id)}`, {
+                method: "DELETE",
+                credentials: "include"
+              });
+
+              if (delRes.ok) {
+                this.loadBookmarks(true);
+              } else {
+                alert("Failed to delete bookmark.");
+              }
+            } catch (err) {
+              alert("Delete error: " + err.message);
+            }
+          });
+
           list.appendChild(item);
         });
 
@@ -1533,6 +1829,10 @@
       const block = this.blocks[this.currentBlockIndex];
       const sentence = block?.sentences?.[this.currentSentenceIndex]?.raw || block?.rawText || "";
       if (!sentence) return;
+
+      if (this.elements.settingsPopover) {
+        this.elements.settingsPopover.classList.remove("open");
+      }
 
       // Switch to AI Tutor panel
       const aiBtn = document.querySelector('[data-tool="ask-ai"]');
