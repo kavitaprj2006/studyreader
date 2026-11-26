@@ -82,10 +82,21 @@
 
       this.blocks = validSections.map((sec, idx) => {
         const rawText = sec.text || "";
-        const sentences = (rawText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [rawText])
-          .map(s => s.trim())
-          .filter(Boolean)
-          .map(s => ({ raw: s, spoken: s }));
+        let sentences = [];
+        if (Array.isArray(sec.sentences) && sec.sentences.length > 0) {
+          sentences = sec.sentences.map(s => ({
+            raw: s.raw || s.text || "",
+            spoken: s.spoken || s.text || s.raw || "",
+            startSpanIdx: typeof s.startSpanIdx === "number" ? s.startSpanIdx : null,
+            endSpanIdx: typeof s.endSpanIdx === "number" ? s.endSpanIdx : null,
+            pageNumber: s.pageNumber || sec.pageNumber || idx + 1
+          }));
+        } else {
+          sentences = (rawText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [rawText])
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(s => ({ raw: s, spoken: s, startSpanIdx: null, endSpanIdx: null, pageNumber: sec.pageNumber || idx + 1 }));
+        }
 
         return {
           blockId: `client_sec_${idx}`,
@@ -93,7 +104,7 @@
           title: sec.label || `Page ${idx + 1}`,
           rawText,
           spokenText: rawText,
-          sentences: sentences.length > 0 ? sentences : [{ raw: rawText || "Page content", spoken: rawText || "Page content" }]
+          sentences: sentences.length > 0 ? sentences : [{ raw: rawText || "Page content", spoken: rawText || "Page content", startSpanIdx: null, endSpanIdx: null, pageNumber: sec.pageNumber || idx + 1 }]
         };
       });
     }
@@ -515,21 +526,11 @@
         this.elements.sliderFill.style.width = `${pct}%`;
         this.elements.timeElapsed.textContent = this.formatTime(current);
         this.elements.timeRemaining.textContent = `-${this.formatTime(Math.max(0, total - current))}`;
-
-        // Word-level follow-along estimate strictly within active sentence spans
-        if (this.followAlong && total > 0 && this.activeSpanRange) {
-          const block = this.blocks[this.currentBlockIndex];
-          const sentenceObj = block?.sentences?.[this.currentSentenceIndex];
-          const raw = sentenceObj?.raw || "";
-          const words = raw.split(/\s+/).filter(Boolean);
-          if (words.length > 0) {
-            const wordIdx = Math.min(words.length - 1, Math.floor((current / total) * words.length));
-            this.highlightSpokenWord(words[wordIdx]);
-          }
-        }
       });
 
       this.audio.addEventListener("ended", () => {
+        // Step 6: On sentence completion, immediately clear previous highlight
+        this.clearHighlights();
         if (this.isPlaying && !this.isPaused) {
           this.nextSentence();
         }
@@ -831,7 +832,11 @@
         const data = await res.json();
 
         if (data.blocks && data.blocks.length > 0) {
-          this.blocks = data.blocks;
+          // If this.blocks already has client-computed span ranges, do not overwrite them with server blocks lacking span ranges
+          const hasClientSpanIndices = this.blocks.some(b => b.sentences && b.sentences.some(s => typeof s.startSpanIdx === "number"));
+          if (!hasClientSpanIndices) {
+            this.blocks = data.blocks;
+          }
           this.elements.docTitle.textContent = `🎧 ${data.title || "Study Document"}`;
 
           // If an initial or user-selected page was passed, cue that page directly
@@ -1228,6 +1233,9 @@
         this.sentencePauseTimer = null;
       }
 
+      // Step 6: Immediately clear previous highlight before advancing
+      this.clearHighlights();
+
       const currentBlock = this.blocks[this.currentBlockIndex];
       if (!currentBlock) return;
 
@@ -1260,12 +1268,12 @@
 
       this.updateBlockUI();
       if (this.isPlaying && !this.isPaused) {
-        // Reduced pause between lines: exactly 400ms (strictly <= 1.0s)
+        // Reduced pause between lines: exactly 350ms (strictly <= 1.0s)
         this.sentencePauseTimer = setTimeout(() => {
           if (this.isPlaying && !this.isPaused) {
             this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
           }
-        }, 400);
+        }, 350);
       }
     }
 
@@ -1277,6 +1285,8 @@
         clearTimeout(this.sentencePauseTimer);
         this.sentencePauseTimer = null;
       }
+
+      this.clearHighlights();
 
       if (this.currentSentenceIndex > 0) {
         this.currentSentenceIndex--;
@@ -1591,20 +1601,18 @@
           console.warn("[ListenPlayer] No voice available to bind to utterance");
         }
 
-        // Exact word pointing boundary event strictly within active sentence
-        utterance.onboundary = (event) => {
-          if (!this.followAlong) return;
-          if (event.name === "word") {
-            const charIdx = event.charIndex || 0;
-            const charLen = event.charLength || 6;
-            const word = text.substr(charIdx, charLen);
-            this.highlightSpokenWord(word);
+        utterance.onstart = () => {
+          // Step 4 & 5: Ensure blue highlight strictly matches the sentence currently being spoken
+          if (this.followAlong) {
+            this.highlightCurrentSentence();
           }
         };
 
         utterance.onend = () => {
           this.currentUtterance = null;
           window._activeSpeechUtterance = null;
+          // Step 6: Immediately clear previous highlight on sentence completion
+          this.clearHighlights();
           if (this.isPlaying && !this.isPaused) {
             this.nextSentence();
           }
@@ -1614,6 +1622,7 @@
         utterance.onerror = (err) => {
           this.currentUtterance = null;
           window._activeSpeechUtterance = null;
+          this.clearHighlights();
           if (this.isPlaying && !this.isPaused && err && err.error !== "canceled" && err.error !== "interrupted") {
             this.nextSentence();
           }
@@ -1647,32 +1656,56 @@
     highlightCurrentSentence() {
       this.clearHighlights();
 
+      if (!this.followAlong) return;
+
       const block = this.blocks[this.currentBlockIndex];
       if (!block) return;
 
       const sentenceObj = block.sentences?.[this.currentSentenceIndex];
-      const rawSentence = (sentenceObj?.raw || "").trim();
+      const rawSentence = (sentenceObj?.raw || sentenceObj?.spoken || "").trim();
       if (!rawSentence) return;
 
       // 1. PDF Text Layer Contiguous Span Mapping
       const textLayer = document.getElementById("pdf-text-layer");
       if (textLayer) {
         const spans = Array.from(textLayer.querySelectorAll("span"));
-        const match = this.findContiguousSpanRange(spans, rawSentence);
+        if (spans.length > 0) {
+          let startSpanIdx = typeof sentenceObj.startSpanIdx === "number" ? sentenceObj.startSpanIdx : null;
+          let endSpanIdx = typeof sentenceObj.endSpanIdx === "number" ? sentenceObj.endSpanIdx : null;
 
-        if (match && match.startSpanIdx !== undefined) {
-          this.activeSpanRange = {
-            spans: spans.slice(match.startSpanIdx, match.endSpanIdx + 1),
-            startIdx: match.startSpanIdx,
-            endIdx: match.endSpanIdx
-          };
+          if (startSpanIdx !== null && endSpanIdx !== null && startSpanIdx >= 0 && endSpanIdx >= startSpanIdx && startSpanIdx < spans.length) {
+            endSpanIdx = Math.min(endSpanIdx, spans.length - 1);
+            this.activeSpanRange = {
+              spans: spans.slice(startSpanIdx, endSpanIdx + 1),
+              startIdx: startSpanIdx,
+              endIdx: endSpanIdx
+            };
 
-          for (let i = match.startSpanIdx; i <= match.endSpanIdx && i < spans.length; i++) {
-            spans[i].classList.add("listen-highlight-sentence");
-          }
+            for (let i = startSpanIdx; i <= endSpanIdx; i++) {
+              if (spans[i]) spans[i].classList.add("listen-highlight-sentence");
+            }
 
-          if (spans[match.startSpanIdx]) {
-            spans[match.startSpanIdx].scrollIntoView({ behavior: "smooth", block: "center" });
+            if (spans[startSpanIdx]) {
+              spans[startSpanIdx].scrollIntoView({ behavior: "smooth", block: "nearest" });
+            }
+          } else {
+            // Fallback: search for contiguous span range
+            const match = this.findContiguousSpanRange(spans, rawSentence);
+            if (match && typeof match.startSpanIdx === "number") {
+              this.activeSpanRange = {
+                spans: spans.slice(match.startSpanIdx, match.endSpanIdx + 1),
+                startIdx: match.startSpanIdx,
+                endIdx: match.endSpanIdx
+              };
+
+              for (let i = match.startSpanIdx; i <= match.endSpanIdx && i < spans.length; i++) {
+                if (spans[i]) spans[i].classList.add("listen-highlight-sentence");
+              }
+
+              if (spans[match.startSpanIdx]) {
+                spans[match.startSpanIdx].scrollIntoView({ behavior: "smooth", block: "nearest" });
+              }
+            }
           }
         }
       }
@@ -1681,13 +1714,13 @@
       const docxBlock = document.querySelector(`.docx-section-block[data-section="${block.sectionNumber || this.currentBlockIndex + 1}"]`);
       if (docxBlock) {
         docxBlock.classList.add("listen-active-section");
-        docxBlock.scrollIntoView({ behavior: "smooth", block: "center" });
+        docxBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
 
       const pptxSlide = document.querySelector(`.pptx-slide-card[data-slide="${block.slideNumber || this.currentBlockIndex + 1}"]`);
       if (pptxSlide) {
         pptxSlide.classList.add("listen-active-section");
-        pptxSlide.scrollIntoView({ behavior: "smooth", block: "center" });
+        pptxSlide.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
     }
 
@@ -1792,26 +1825,10 @@
     }
 
     /**
-     * Highlights the active spoken word STRICTLY within the current sentence's span range.
+     * Word-level highlighting is intentionally removed; only clean blue sentence highlighting is active.
      */
     highlightSpokenWord(wordText) {
-      if (!this.followAlong || !wordText) return;
-      const cleanWord = wordText.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (cleanWord.length < 2) return;
-
-      // Clear previous word highlight
-      document.querySelectorAll(".listen-highlight-word").forEach(el => el.classList.remove("listen-highlight-word"));
-
-      if (!this.activeSpanRange || !this.activeSpanRange.spans) return;
-
-      // Search ONLY within the active contiguous sentence spans!
-      for (const span of this.activeSpanRange.spans) {
-        const spanText = (span.textContent || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (spanText.includes(cleanWord)) {
-          span.classList.add("listen-highlight-word");
-          break;
-        }
-      }
+      // Intentionally empty — yellow word highlighting removed per requirement
     }
 
     /**

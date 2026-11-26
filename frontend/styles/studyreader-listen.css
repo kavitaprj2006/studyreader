@@ -18,26 +18,12 @@
   border-bottom: 1px dashed #6366f1 !important;
 }
 
-.textLayer span.listen-highlight-word {
-  background: rgba(250, 204, 21, 0.85) !important;
-  color: transparent !important; /* CRITICAL: Must be transparent in PDF textLayer to prevent duplicate floating text */
-  border-bottom: 2px solid #ca8a04 !important;
-  border-radius: 2px;
-  box-shadow: 0 0 8px rgba(234, 179, 8, 0.85);
-  transition: all 0.1s ease;
-}
-
-/* Fallback word highlight for non-PDF text blocks */
-.docx-section-block span.listen-highlight-word,
-.pptx-slide-card span.listen-highlight-word,
+/* Word-level yellow highlighting is disabled per specification (clean blue sentence highlighting only) */
+.textLayer span.listen-highlight-word,
 span.listen-highlight-word {
-  background: #fde047 !important;
-  color: #713f12 !important;
-  border-bottom: 2px solid #ca8a04 !important;
-  border-radius: 2px;
-  box-shadow: 0 0 8px rgba(234, 179, 8, 0.85);
-  font-weight: 700;
-  transition: all 0.1s ease;
+  background: transparent !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
 }
 
 /* DOCX & PPTX Card Highlighting */
@@ -69,6 +55,7 @@ span.listen-highlight-word {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  container-type: inline-size;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -88,6 +75,7 @@ span.listen-highlight-word {
   gap: 6px;
   min-width: 0;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .listen-track-title {
@@ -579,19 +567,38 @@ body.listen-focus-mode .studyreader-listen-bar {
   font-weight: 500;
 }
 
-/* Responsive Rules for Small Devices */
+/* Responsive Rules for Small Devices & Narrow Containers (e.g. when AI Tutor panel is open) */
+@container (max-width: 740px) {
+  .listen-compact-main-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "info transport actions"
+      "progress progress progress";
+    gap: 6px;
+  }
+  .listen-track-info { grid-area: info; }
+  .listen-transport-controls { grid-area: transport; justify-content: center; }
+  .listen-actions-group { grid-area: actions; justify-content: flex-end; }
+  .listen-progress-row { grid-area: progress; width: 100%; }
+}
+
+@container (max-width: 520px) {
+  .listen-compact-main-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "info actions"
+      "transport transport"
+      "progress progress";
+    gap: 6px;
+  }
+}
+
 @media (max-width: 640px) {
   .studyreader-listen-bar {
     bottom: 6px;
     width: calc(100% - 12px);
     padding: 8px 10px;
-  }
-  .listen-compact-main-row {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .listen-progress-row {
-    order: 3;
-    width: 100%;
   }
 }

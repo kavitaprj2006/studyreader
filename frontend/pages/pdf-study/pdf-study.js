@@ -1657,20 +1657,132 @@ async function handleStudyTool(tool) {
    READ ALOUD INTEGRATION WITH FORMULA & BULLET NORMALIZER
    ============================================================ */
 
+function buildPageSentencesFromPdfItems(items, pageNumber) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const lines = [];
+  let currentLine = [];
+  let lastY = null;
+
+  items.forEach((item, itemIdx) => {
+    if (!item.str || !item.str.trim()) return;
+    const y = Math.round(item.transform[5]);
+    if (lastY !== null && Math.abs(y - lastY) > 3) {
+      if (currentLine.length > 0) {
+        lines.push({ y: lastY, items: currentLine });
+        currentLine = [];
+      }
+    }
+    currentLine.push({ str: item.str, itemIdx, x: Math.round(item.transform[4]), y });
+    lastY = y;
+  });
+  if (currentLine.length > 0) {
+    lines.push({ y: lastY, items: currentLine });
+  }
+
+  // Filter out standalone page number footer at the very bottom (y < 50 and pure number)
+  const contentLines = lines.filter((line, lIdx) => {
+    const lineText = line.items.map(it => it.str).join("").trim();
+    if (/^\d+$/.test(lineText) && (line.y < 50 || lIdx === lines.length - 1)) return false;
+    return lineText.length > 0;
+  });
+
+  const sentences = [];
+  let curSent = {
+    text: "",
+    startSpanIdx: null,
+    endSpanIdx: null,
+    pageNumber
+  };
+
+  contentLines.forEach((line, lineIdx) => {
+    const lineStr = line.items.map(it => it.str).join("").replace(/\s+/g, " ").trim();
+    const firstItem = line.items[0];
+    const lastItem = line.items[line.items.length - 1];
+
+    // Check if line is a standalone heading or title
+    const isHeading = (lineIdx === 0 && lineStr.length < 80 && !lineStr.endsWith(".")) ||
+                      /^(?:chapter|unit|lecture|\d+\.\d+)\b/i.test(lineStr) ||
+                      (/^[A-Z\s\(\)\:\-\.\,\?]{4,80}$/.test(lineStr) && line.items.length <= 4);
+
+    if (isHeading) {
+      if (curSent.text && curSent.text.trim()) {
+        const cleanRaw = curSent.text.replace(/^[▪•\-\*]\s*/, "").replace(/\s+/g, " ").trim();
+        sentences.push({ raw: cleanRaw, spoken: cleanRaw, startSpanIdx: curSent.startSpanIdx, endSpanIdx: curSent.endSpanIdx, pageNumber });
+        curSent = { text: "", startSpanIdx: null, endSpanIdx: null, pageNumber };
+      }
+      sentences.push({
+        raw: lineStr,
+        spoken: lineStr,
+        startSpanIdx: firstItem.itemIdx,
+        endSpanIdx: lastItem.itemIdx,
+        pageNumber
+      });
+      return;
+    }
+
+    // Check if line starts with a bullet symbol (▪, •, -, *)
+    const isBulletStart = /^[▪•\-\*]\s*/.test(lineStr);
+    if (isBulletStart && curSent.text.trim().length > 0) {
+      const cleanRaw = curSent.text.replace(/^[▪•\-\*]\s*/, "").replace(/\s+/g, " ").trim();
+      sentences.push({ raw: cleanRaw, spoken: cleanRaw, startSpanIdx: curSent.startSpanIdx, endSpanIdx: curSent.endSpanIdx, pageNumber });
+      curSent = { text: "", startSpanIdx: null, endSpanIdx: null, pageNumber };
+    }
+
+    line.items.forEach(it => {
+      const itStr = it.str.trim();
+      if (!itStr) return;
+
+      const parts = itStr.split(/(?<=[.!?])\s+(?=[A-Z0-9])/);
+      parts.forEach((part, pIdx) => {
+        const partTrimmed = part.trim();
+        if (!partTrimmed) return;
+
+        if (curSent.startSpanIdx === null) {
+          curSent.startSpanIdx = it.itemIdx;
+        }
+        curSent.endSpanIdx = it.itemIdx;
+
+        const endsSentence = /[.!?]$/.test(partTrimmed);
+        const isAbbreviation = /\b(?:e\.g\.|i\.e\.|etc\.|vs\.|al\.)$/i.test(partTrimmed);
+
+        if (endsSentence && !isAbbreviation) {
+          curSent.text += (curSent.text ? " " : "") + partTrimmed;
+          const cleanRaw = curSent.text.replace(/^[▪•\-\*]\s*/, "").replace(/\s+/g, " ").trim();
+          if (cleanRaw.length > 0) {
+            sentences.push({ raw: cleanRaw, spoken: cleanRaw, startSpanIdx: curSent.startSpanIdx, endSpanIdx: curSent.endSpanIdx, pageNumber });
+          }
+          curSent = { text: "", startSpanIdx: (pIdx < parts.length - 1 ? it.itemIdx : null), endSpanIdx: (pIdx < parts.length - 1 ? it.itemIdx : null), pageNumber };
+        } else {
+          curSent.text += (curSent.text ? " " : "") + partTrimmed;
+        }
+      });
+    });
+  });
+
+  if (curSent.text && curSent.text.trim()) {
+    const cleanRaw = curSent.text.replace(/^[▪•\-\*]\s*/, "").replace(/\s+/g, " ").trim();
+    sentences.push({ raw: cleanRaw, spoken: cleanRaw, startSpanIdx: curSent.startSpanIdx, endSpanIdx: curSent.endSpanIdx, pageNumber });
+  }
+
+  return sentences;
+}
+
 async function getPdfReadingSections() {
   const sections = [];
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     const page = await pdfDocument.getPage(pageNumber);
     const textContent = await page.getTextContent();
-    const text = textContent.items
-      .map((item) => item.str)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const pageSentences = buildPageSentencesFromPdfItems(textContent.items, pageNumber);
+    const text = pageSentences.length > 0
+      ? pageSentences.map(s => s.raw).join(" ")
+      : textContent.items.map((item) => item.str).join(" ").replace(/\s+/g, " ").trim();
+
     sections.push({
       pageNumber,
       label: `Page ${pageNumber}`,
-      text
+      text,
+      sentences: pageSentences
     });
   }
 
@@ -1686,7 +1798,8 @@ async function getPdfReadingSections() {
           return data.blocks.map((b) => ({
             pageNumber: b.pageNumber || 1,
             label: b.title || `Page ${b.pageNumber || 1}`,
-            text: b.spokenText || b.rawText || ""
+            text: b.spokenText || b.rawText || "",
+            sentences: b.sentences
           }));
         }
       }
