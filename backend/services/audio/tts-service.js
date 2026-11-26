@@ -45,8 +45,8 @@ class TTSService {
   }
 
   /**
-   * Returns list of all available voices across configured adapters,
-   * plus standard client-side browser synthesis options.
+   * Returns list of all available server neural voices across configured adapters.
+   * Client-side device voices are discovered dynamically via SpeechSynthesis on the client.
    */
   async getAvailableVoices() {
     const voices = [];
@@ -60,42 +60,6 @@ class TTSService {
     if (this.adapters.google.isConfigured()) {
       voices.push(...this.adapters.google.getVoices());
     }
-
-    // 3. Built-in Client Browser Neural Voices (always available on client device)
-    voices.push(
-      {
-        id: "browser:en-IN-Neerja",
-        name: "Microsoft Neerja (Neural — Indian English)",
-        gender: "female",
-        language: "en-IN",
-        type: "browser",
-        description: "Built-in device neural voice"
-      },
-      {
-        id: "browser:en-IN-Prabhat",
-        name: "Microsoft Prabhat (Neural — Indian English)",
-        gender: "male",
-        language: "en-IN",
-        type: "browser",
-        description: "Built-in device neural voice"
-      },
-      {
-        id: "browser:hi-IN-Swara",
-        name: "Microsoft Swara (Neural — Hindi)",
-        gender: "female",
-        language: "hi-IN",
-        type: "browser",
-        description: "Built-in device neural voice"
-      },
-      {
-        id: "browser:en-US-Jenny",
-        name: "Microsoft Jenny (Neural — US English)",
-        gender: "female",
-        language: "en-US",
-        type: "browser",
-        description: "Built-in device neural voice"
-      }
-    );
 
     return voices;
   }

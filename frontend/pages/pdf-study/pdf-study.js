@@ -1660,6 +1660,7 @@ async function getPdfReadingSections() {
       .replace(/\s+/g, " ")
       .trim();
     sections.push({
+      pageNumber,
       label: `Page ${pageNumber}`,
       text
     });
@@ -1675,6 +1676,7 @@ async function getPdfReadingSections() {
         const data = await blocksRes.json();
         if (data.blocks && data.blocks.length > 0) {
           return data.blocks.map((b) => ({
+            pageNumber: b.pageNumber || 1,
             label: b.title || `Page ${b.pageNumber || 1}`,
             text: b.spokenText || b.rawText || ""
           }));

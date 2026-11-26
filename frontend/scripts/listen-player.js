@@ -165,11 +165,15 @@
 
           <div class="listen-setting-row">
             <span class="listen-label">Voice:</span>
-            <select id="select-listen-voice" class="listen-select">
-              <option value="cf:luna">Luna (Neural Studio — Female)</option>
-              <option value="cf:orion">Orion (Neural Studio — Male)</option>
-            </select>
+            <div style="display: flex; gap: 6px; align-items: center; flex: 1; justify-content: flex-end;">
+              <select id="select-listen-voice" class="listen-select" style="max-width: 175px;">
+                <option value="cf:luna">Luna (Neural Studio — Female)</option>
+                <option value="cf:orion">Orion (Neural Studio — Male)</option>
+              </select>
+              <button type="button" id="btn-preview-voice" class="listen-pill-btn" style="padding: 3px 8px; font-size: 11px; white-space: nowrap;" title="Test / Preview Selected Voice">▶ Test Voice</button>
+            </div>
           </div>
+          <div id="listen-voice-preview-status" style="font-size: 11px; color: #4338ca; min-height: 14px; margin-top: -4px;"></div>
 
           <div class="listen-setting-row">
             <span class="listen-label">Speed:</span>
@@ -245,6 +249,8 @@
         btnFocus: container.querySelector("#btn-listen-focus"),
         btnClose: container.querySelector("#btn-listen-close"),
         selectVoice: container.querySelector("#select-listen-voice"),
+        btnPreviewVoice: container.querySelector("#btn-preview-voice"),
+        previewStatus: container.querySelector("#listen-voice-preview-status"),
         selectSpeed: container.querySelector("#select-listen-speed"),
         selectSleep: container.querySelector("#select-listen-sleep"),
         btnToggleFollow: container.querySelector("#btn-toggle-follow"),
@@ -300,10 +306,29 @@
         this.voiceId = e.target.value;
         this.audioPreloadCache.clear();
         this.saveHistoryProgress();
-        if (this.isPlaying) {
+
+        // Cleanly cancel pending synthesis/utterances on voice switch
+        if ("speechSynthesis" in window) {
+          try { window.speechSynthesis.cancel(); } catch (_) {}
+        }
+        if (this.audio) {
+          this.audio.pause();
+        }
+
+        const voiceMeta = this.voiceMetaMap.get(this.voiceId);
+        const vName = voiceMeta?.name || this.voiceId;
+        if (el.previewStatus) {
+          el.previewStatus.textContent = `Selected: ${vName} (${voiceMeta?.provider || "audio"})`;
+        }
+
+        if (this.isPlaying && !this.isPaused) {
           this.playSentence(this.currentBlockIndex, this.currentSentenceIndex);
         }
       });
+
+      if (el.btnPreviewVoice) {
+        el.btnPreviewVoice.addEventListener("click", () => this.previewSelectedVoice());
+      }
 
       el.selectSleep.addEventListener("change", (e) => {
         this.setSleepTimer(e.target.value);
@@ -454,64 +479,70 @@
       }
 
       this.voiceMetaMap = new Map();
+      this.deviceVoicesMap = new Map();
       const sel = this.elements.selectVoice;
       if (!sel) return;
+      const prevSelectedVoiceId = this.voiceId || sel.value;
       sel.innerHTML = "";
 
-      // Server neural studio voices first
+      // 1. Server neural studio voices first (Cloudflare Aura)
       const cfGroup = document.createElement("optgroup");
-      cfGroup.label = "Studio Neural Voices (Cloudflare Aura)";
+      cfGroup.label = "Cloudflare Studio Neural Voices";
 
+      // 2. Real device voices from browser speechSynthesis
       const browserGroup = document.createElement("optgroup");
-      browserGroup.label = "High-Quality Device Neural Voices";
+      browserGroup.label = "Device Voices";
 
       serverVoices.forEach(v => {
         if (!v) return;
         const id = v.id || v.voice || "";
         const name = v.name || v.label || v.displayName || id;
-        const isMale = /orion|apollo|atlas|guy|prabhat|male/i.test(id) || /male/i.test(v.gender || "");
+        if (!name || name === "undefined") return;
+
+        const isMale = /orion|apollo|atlas|guy|male/i.test(id) || /male/i.test(v.gender || "");
         const gender = isMale ? "male" : "female";
-        const meta = { id, name, gender, provider: v.provider || (id.startsWith("cf:") ? "cloudflare" : "browser"), lang: v.language || "en-US" };
+        const meta = { id, name, gender, provider: "cloudflare", lang: v.language || "en-US" };
         this.voiceMetaMap.set(id, meta);
 
         const opt = document.createElement("option");
         opt.value = id;
-        opt.textContent = `${name}${v.isStudio ? " ✦" : ""}`;
-        if (opt.textContent.includes("undefined")) {
-          opt.textContent = opt.value || "Neural Voice";
-        }
-        if (meta.provider === "cloudflare" || meta.provider === "google") {
-          cfGroup.appendChild(opt);
-        } else {
-          browserGroup.appendChild(opt);
-        }
+        opt.textContent = `${name}`;
+        cfGroup.appendChild(opt);
       });
 
-      // Also dynamically populate device SpeechSynthesis voices
+      // Dynamically populate actual device SpeechSynthesis voices
       if ("speechSynthesis" in window) {
         const localVoices = window.speechSynthesis.getVoices() || [];
         localVoices.forEach(lv => {
-          if (!lv) return;
-          const name = lv.name || lv.voiceURI || "Device Voice";
-          const id = `browser:${name}`;
+          if (!lv || !lv.name) return;
+          const name = String(lv.name).trim();
+          if (!name || name === "undefined") return;
+
+          const uri = lv.voiceURI || name;
+          const id = `device:${encodeURIComponent(uri)}`;
           const isFemale = /female|zira|jenny|neerja|swara|ava|emma|sonia|samantha|karen|victoria|linda|heera|sunita|kalpana/i.test(name);
           const isMale = /male|david|guy|prabhat|madhur|mark|george|ravi|hemant/i.test(name);
           const gender = isFemale ? "female" : (isMale ? "male" : "female");
-          this.voiceMetaMap.set(id, { id, name, gender, provider: "browser", lang: lv.lang, nativeVoice: lv });
+
+          const meta = { id, name, gender, provider: "device", lang: lv.lang, nativeVoice: lv };
+          this.voiceMetaMap.set(id, meta);
+          this.deviceVoicesMap.set(id, lv);
+          // Also register under raw name and legacy browser: prefix for seamless matching
+          this.deviceVoicesMap.set(`browser:${name}`, lv);
+          this.deviceVoicesMap.set(`device:${encodeURIComponent(name)}`, lv);
 
           if (!browserGroup.querySelector(`option[value="${id}"]`)) {
             const opt = document.createElement("option");
             opt.value = id;
-            opt.textContent = lv.lang ? `${name} (${lv.lang})` : name;
-            if (opt.textContent.includes("undefined")) {
-              opt.textContent = name;
-            }
+            const langLabel = lv.lang ? ` [${lv.lang}]` : "";
+            const isNatural = /natural|online/i.test(name) ? " (Natural)" : "";
+            opt.textContent = `${name}${isNatural}${langLabel}`;
             browserGroup.appendChild(opt);
           }
         });
 
         // Listen for async voice loading on Chrome/Safari/Edge
-        if (localVoices.length === 0 && !this._voicesBound) {
+        if (!this._voicesBound) {
           this._voicesBound = true;
           window.speechSynthesis.onvoiceschanged = () => {
             this.loadVoices();
@@ -522,11 +553,110 @@
       if (cfGroup.children.length > 0) sel.appendChild(cfGroup);
       if (browserGroup.children.length > 0) sel.appendChild(browserGroup);
 
-      if (this.voiceId && sel.querySelector(`option[value="${this.voiceId}"]`)) {
+      // Restore selection if valid, or keep previous, or pick first available
+      if (prevSelectedVoiceId && sel.querySelector(`option[value="${prevSelectedVoiceId}"]`)) {
+        sel.value = prevSelectedVoiceId;
+        this.voiceId = prevSelectedVoiceId;
+      } else if (this.voiceId && sel.querySelector(`option[value="${this.voiceId}"]`)) {
         sel.value = this.voiceId;
       } else if (sel.options.length > 0) {
         sel.selectedIndex = 0;
         this.voiceId = sel.value;
+      }
+    }
+
+    /**
+     * Plays a live preview test utterance for the currently selected voice.
+     */
+    async previewSelectedVoice() {
+      if ("speechSynthesis" in window) {
+        try { window.speechSynthesis.cancel(); } catch (_) {}
+      }
+      if (this.audio) {
+        try { this.audio.pause(); } catch (_) {}
+      }
+
+      const statusEl = this.elements.previewStatus;
+      const selVoiceId = this.voiceId || (this.elements.selectVoice ? this.elements.selectVoice.value : "");
+
+      if (!selVoiceId) {
+        if (statusEl) statusEl.textContent = "Please select a voice first.";
+        return;
+      }
+
+      if (selVoiceId.startsWith("device:") || selVoiceId.startsWith("browser:")) {
+        const allVoices = ("speechSynthesis" in window) ? window.speechSynthesis.getVoices() : [];
+        const rawTarget = decodeURIComponent(selVoiceId.replace(/^(device:|browser:)/, "")).toLowerCase();
+        const voiceObj = this.deviceVoicesMap?.get(selVoiceId) ||
+                         allVoices.find(v => (v.voiceURI && v.voiceURI.toLowerCase() === rawTarget) ||
+                                             (v.name && v.name.toLowerCase() === rawTarget));
+
+        if (!voiceObj) {
+          if (statusEl) statusEl.textContent = "⚠️ Selected device voice not found on this system.";
+          return;
+        }
+
+        const cleanName = voiceObj.name.replace(/\s*\([^)]*\)/g, "");
+        const utterance = new SpeechSynthesisUtterance(`Hello! This is ${cleanName} speaking with natural pronunciation.`);
+        utterance.voice = voiceObj;
+        utterance.lang = voiceObj.lang || "en-US";
+        utterance.rate = this.speed || 1.0;
+
+        if (statusEl) {
+          statusEl.textContent = `🔊 Playing preview with ${voiceObj.name}...`;
+        }
+
+        utterance.onend = () => {
+          if (statusEl) statusEl.textContent = `✓ Preview complete: ${voiceObj.name}`;
+        };
+        utterance.onerror = (e) => {
+          if (statusEl && e.error !== "canceled" && e.error !== "interrupted") {
+            statusEl.textContent = `⚠️ Voice preview error: ${e.error || "playback failed"}`;
+          }
+        };
+
+        window.speechSynthesis.speak(utterance);
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+
+      } else if (selVoiceId.startsWith("cf:")) {
+        const voiceMeta = this.voiceMetaMap.get(selVoiceId);
+        const voiceName = voiceMeta?.name || selVoiceId.replace("cf:", "");
+        if (statusEl) statusEl.textContent = `🔊 Testing Cloudflare Neural Voice: ${voiceName}...`;
+
+        try {
+          const res = await fetch(`${API_BASE_URL}/api/listen/document/0/synthesize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              text: `Hello, this is ${voiceName} speaking from StudyReader neural studio.`,
+              voice: selVoiceId,
+              speed: this.speed || 1.0,
+              pageNumber: 1,
+              chunkIndex: 0
+            })
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            if (statusEl) statusEl.textContent = `⚠️ Cloudflare quota limit reached (${err.message || res.status}). Please choose a Device Voice.`;
+            return;
+          }
+
+          const blob = await res.blob();
+          const audioUrl = URL.createObjectURL(blob);
+          const sampleAudio = new Audio(audioUrl);
+          sampleAudio.playbackRate = this.speed || 1.0;
+          sampleAudio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            if (statusEl) statusEl.textContent = `✓ Cloudflare neural preview complete: ${voiceName}`;
+          };
+          sampleAudio.play();
+        } catch (err) {
+          if (statusEl) statusEl.textContent = `⚠️ Cloudflare synthesis error: ${err.message}. Please select a Device Voice.`;
+        }
       }
     }
 
@@ -672,8 +802,18 @@
           this.onPageChangeCallback(targetPageNum);
         }
         this.updateBlockUI({ syncViewer: false });
-        if (this.isPlaying) {
+        if (this.isPlaying && !this.isPaused) {
           this.playSentence(this.currentBlockIndex, 0);
+        }
+      } else {
+        if (this.elements.selectPage) {
+          this.elements.selectPage.value = String(targetPageNum);
+        }
+        if (this.elements.blockLabel) {
+          this.elements.blockLabel.textContent = `Page ${targetPageNum} has no readable text for speech.`;
+        }
+        if (this.onPageChangeCallback) {
+          this.onPageChangeCallback(targetPageNum);
         }
       }
     }
@@ -708,12 +848,21 @@
       const page = parseInt(pageNumber, 10);
       if (isNaN(page) || page < 1 || !this.blocks.length) return;
       const targetIdx = this.blocks.findIndex(b => b.pageNumber === page);
-      if (targetIdx !== -1 && targetIdx !== this.currentBlockIndex) {
-        this.currentBlockIndex = targetIdx;
-        this.currentSentenceIndex = 0;
-        this.updateBlockUI({ syncViewer: false });
-        if (this.isPlaying) {
-          this.playSentence(this.currentBlockIndex, 0);
+      if (targetIdx !== -1) {
+        if (targetIdx !== this.currentBlockIndex) {
+          this.currentBlockIndex = targetIdx;
+          this.currentSentenceIndex = 0;
+          this.updateBlockUI({ syncViewer: false });
+          if (this.isPlaying && !this.isPaused) {
+            this.playSentence(this.currentBlockIndex, 0);
+          }
+        }
+      } else {
+        if (this.elements.selectPage) {
+          this.elements.selectPage.value = String(page);
+        }
+        if (this.elements.blockLabel) {
+          this.elements.blockLabel.textContent = `Page ${page} (no readable text found)`;
         }
       }
     }
@@ -783,11 +932,22 @@
         }
       }
 
-      // If current block has no valid spoken text, find first playable block
+      // Check if current block has text to read
       let currBlock = this.blocks[this.currentBlockIndex];
       let currSpoken = currBlock?.sentences?.[this.currentSentenceIndex]?.spoken || currBlock?.spokenText || currBlock?.rawText;
       if (!currBlock || !currSpoken || !currSpoken.trim()) {
-        const validIdx = this.blocks.findIndex(b => {
+        // Look within the SAME page first to avoid jumping across the document!
+        const samePageIdx = this.blocks.findIndex(b => b.pageNumber === currBlock?.pageNumber && (b.spokenText || b.rawText)?.trim());
+        if (samePageIdx !== -1) {
+          this.currentBlockIndex = samePageIdx;
+          this.currentSentenceIndex = 0;
+        } else {
+          this.elements.blockLabel.textContent = `Page ${currBlock?.pageNumber || 1} has no readable text.`;
+          this.isPlaying = false;
+          if (this.elements.btnPlayToggle) this.elements.btnPlayToggle.textContent = "▶";
+          return;
+        }
+      }
           const t = b.spokenText || b.rawText || (b.sentences && b.sentences[0] && (b.sentences[0].spoken || b.sentences[0].raw));
           return t && t.trim().length > 0;
         });
@@ -1108,8 +1268,8 @@
         this.highlightCurrentSentence();
       }
 
-      // Check if user selected browser voice
-      if (this.voiceId.startsWith("browser:")) {
+      // Check if user selected browser or device voice
+      if (this.voiceId.startsWith("browser:") || this.voiceId.startsWith("device:")) {
         await this.speakWithBrowserVoice(spokenText);
         return;
       }
@@ -1240,7 +1400,7 @@
     }
 
     /**
-     * Browser speech synthesis with word-level boundary tracking and strict gender verification.
+     * Browser speech synthesis with word-level boundary tracking and exact voice object binding.
      */
     speakWithBrowserVoice(text) {
       return new Promise((resolve) => {
@@ -1260,35 +1420,43 @@
         utterance.rate = this.speed || 1.0;
 
         const allVoices = window.speechSynthesis.getVoices() || [];
-        const desiredGender = this.getVoiceGender(this.voiceId);
         let selectedVoice = null;
 
-        // 1. Direct name match if browser voice
-        if (this.voiceId && this.voiceId.startsWith("browser:")) {
-          const rawTarget = this.voiceId.replace(/^browser:/, "").toLowerCase();
-          const coreName = rawTarget.replace(/^[a-z]{2}-[a-z]{2}-/i, "").toLowerCase();
-          selectedVoice = allVoices.find(v => {
-            const vName = (v.name || "").toLowerCase();
-            const vUri = (v.voiceURI || "").toLowerCase();
-            return vName === rawTarget || vUri === rawTarget || vName.includes(coreName);
-          });
+        // 1. Exact lookup from device voice cache
+        if (this.voiceId) {
+          if (this.deviceVoicesMap && this.deviceVoicesMap.has(this.voiceId)) {
+            selectedVoice = this.deviceVoicesMap.get(this.voiceId);
+          }
+          if (!selectedVoice) {
+            const rawTarget = decodeURIComponent(this.voiceId.replace(/^(device:|browser:)/, "")).toLowerCase();
+            const coreName = rawTarget.replace(/^[a-z]{2}-[a-z]{2}-/i, "").toLowerCase();
+            selectedVoice = allVoices.find(v => {
+              const vUri = (v.voiceURI || "").toLowerCase();
+              const vName = (v.name || "").toLowerCase();
+              return vUri === rawTarget || vName === rawTarget || vUri.includes(coreName) || vName.includes(coreName);
+            });
+          }
         }
 
         // 2. Strict gender matching if not directly matched or if neural fallback
         if (!selectedVoice && allVoices.length > 0) {
+          const desiredGender = this.getVoiceGender(this.voiceId);
           if (desiredGender === "female") {
-            selectedVoice = allVoices.find(v => /jenny|neerja|zira|swara|ava|emma|sonia|samantha|karen|victoria/i.test(v.name)) ||
+            selectedVoice = allVoices.find(v => /female|zira|jenny|neerja|swara|ava|emma|sonia|samantha|karen|victoria/i.test(v.name)) ||
                             allVoices.find(v => /female/i.test(v.name)) ||
                             allVoices.find(v => !/david|guy|male|mark|george|prabhat|madhur|ravi/i.test(v.name));
           } else {
             selectedVoice = allVoices.find(v => /guy|david|prabhat|madhur|mark|george/i.test(v.name)) ||
                             allVoices.find(v => /male/i.test(v.name));
           }
+          if (!selectedVoice) selectedVoice = allVoices[0];
         }
 
         if (selectedVoice) {
           utterance.voice = selectedVoice;
           utterance.lang = selectedVoice.lang || "en-US";
+        } else {
+          console.warn("[ListenPlayer] No voice available to bind to utterance");
         }
 
         // Exact word pointing boundary event strictly within active sentence

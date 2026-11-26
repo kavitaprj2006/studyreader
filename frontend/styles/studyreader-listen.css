@@ -5,11 +5,11 @@
 
 /* 1. Synchronized Highlighting (Follow Along) */
 .textLayer span.listen-highlight-sentence {
-  background: rgba(99, 102, 241, 0.25) !important;
-  color: #1e1b4b !important;
+  background: rgba(99, 102, 241, 0.3) !important;
+  color: transparent !important; /* CRITICAL: Must be transparent in PDF textLayer so underlying canvas glyphs show cleanly with NO duplicate text */
   border-bottom: 2px solid #6366f1 !important;
   border-radius: 3px;
-  box-shadow: 0 0 6px rgba(99, 102, 241, 0.25);
+  box-shadow: 0 0 6px rgba(99, 102, 241, 0.3);
   transition: background-color 0.15s ease;
 }
 
@@ -18,7 +18,18 @@
   border-bottom: 1px dashed #6366f1 !important;
 }
 
-.textLayer span.listen-highlight-word,
+.textLayer span.listen-highlight-word {
+  background: rgba(250, 204, 21, 0.85) !important;
+  color: transparent !important; /* CRITICAL: Must be transparent in PDF textLayer to prevent duplicate floating text */
+  border-bottom: 2px solid #ca8a04 !important;
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(234, 179, 8, 0.85);
+  transition: all 0.1s ease;
+}
+
+/* Fallback word highlight for non-PDF text blocks */
+.docx-section-block span.listen-highlight-word,
+.pptx-slide-card span.listen-highlight-word,
 span.listen-highlight-word {
   background: #fde047 !important;
   color: #713f12 !important;
@@ -66,14 +77,15 @@ span.listen-highlight-word {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .listen-track-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
   flex-shrink: 0;
 }
@@ -294,7 +306,8 @@ span.listen-highlight-word {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 12px;
-  width: 320px;
+  width: min(340px, calc(100% - 24px));
+  max-width: 95vw;
   background: #ffffff;
   border: 1px solid #cbd5e1;
   border-radius: 12px;
@@ -355,7 +368,8 @@ span.listen-highlight-word {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 12px;
-  width: 340px;
+  width: min(340px, calc(100% - 24px));
+  max-width: 95vw;
   max-height: 320px;
   background: #ffffff;
   border: 1px solid #cbd5e1;

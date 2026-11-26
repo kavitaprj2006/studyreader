@@ -1479,6 +1479,7 @@ a {
   min-width: 0;
   position: relative;
   background: #cbd5e1;
+  overflow-x: hidden;
 }
 
 .pdf-viewer-toolbar {
