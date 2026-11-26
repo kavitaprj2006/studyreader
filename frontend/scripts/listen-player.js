@@ -146,6 +146,7 @@
           <div class="listen-actions-group">
             <button type="button" id="btn-listen-settings" class="listen-pill-btn" title="Audio Settings">⚙️ Settings</button>
             <button type="button" id="btn-listen-bookmark" class="listen-pill-btn" title="Bookmarks & Notes">🔖 Mark</button>
+            <button type="button" id="btn-listen-flashcards" class="listen-pill-btn" title="Study Flashcards">🗂️ Cards</button>
             <button type="button" id="btn-listen-close" class="listen-btn" style="width: 26px; height: 26px; font-size: 11px;" title="Close Player">✕</button>
           </div>
         </div>
@@ -218,6 +219,42 @@
             <p style="color: #64748b; font-size: 12px; margin: 0;">No bookmarks saved yet. Click '+ New' while listening to save key points.</p>
           </div>
         </div>
+
+        <!-- Flashcards Drawer / Popover (Floats cleanly above player bar) -->
+        <div id="listen-flashcards-drawer" class="listen-drawer listen-cards-drawer">
+          <div class="listen-drawer-head">
+            <h4 class="listen-popover-title">🗂️ Interactive Study Flashcards</h4>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <span id="listen-cards-counter" class="listen-badge" style="font-size: 10px;">0 / 0</span>
+              <button type="button" id="btn-gen-flashcards" class="listen-pill-btn" style="padding: 2px 8px; font-size: 11px;" title="Generate flashcards from current page">⚡ Generate</button>
+              <button type="button" id="btn-close-cards-drawer" class="listen-btn" style="width: 22px; height: 22px; font-size: 10px;">✕</button>
+            </div>
+          </div>
+          <div class="listen-drawer-body" id="listen-cards-body" style="align-items: center; justify-content: center; min-height: 180px;">
+            <div id="listen-card-container" class="listen-flashcard-box" style="display: none;">
+              <div id="listen-card-inner" class="listen-card-inner">
+                <div class="listen-card-face listen-card-front">
+                  <div class="listen-card-tag">QUESTION / CONCEPT</div>
+                  <div id="listen-card-front-text" class="listen-card-text">Loading question...</div>
+                  <div class="listen-card-hint">Click card to flip ↻</div>
+                </div>
+                <div class="listen-card-face listen-card-back">
+                  <div class="listen-card-tag">EXPLANATION / ANSWER</div>
+                  <div id="listen-card-back-text" class="listen-card-text">Loading answer...</div>
+                  <div class="listen-card-hint">Click card to flip ↻</div>
+                </div>
+              </div>
+            </div>
+            <div id="listen-cards-empty" style="text-align: center; color: #64748b; font-size: 12px; padding: 16px;">
+              No flashcards for this page yet.<br>Click <strong>'⚡ Generate'</strong> to create concept review cards!
+            </div>
+            <div id="listen-cards-nav" class="listen-cards-nav" style="display: none; width: 100%; justify-content: space-between; align-items: center; margin-top: 10px;">
+              <button type="button" id="btn-card-prev" class="listen-btn" style="width: 28px; height: 28px; font-size: 12px;" title="Previous Card">‹</button>
+              <button type="button" id="btn-card-flip" class="listen-pill-btn" style="padding: 3px 12px; font-size: 11.5px;">Flip Card ↻</button>
+              <button type="button" id="btn-card-next" class="listen-btn" style="width: 28px; height: 28px; font-size: 12px;" title="Next Card">›</button>
+            </div>
+          </div>
+        </div>
       `;
 
       // Mount into viewer area
@@ -261,7 +298,21 @@
         timeRemaining: container.querySelector("#listen-time-remaining"),
         drawer: container.querySelector("#listen-bookmarks-drawer"),
         bookmarksList: container.querySelector("#listen-bookmarks-list"),
-        btnCloseDrawer: container.querySelector("#btn-close-drawer")
+        btnCloseDrawer: container.querySelector("#btn-close-drawer"),
+        btnFlashcards: container.querySelector("#btn-listen-flashcards"),
+        cardsDrawer: container.querySelector("#listen-flashcards-drawer"),
+        cardsCounter: container.querySelector("#listen-cards-counter"),
+        btnGenCards: container.querySelector("#btn-gen-flashcards"),
+        btnCloseCards: container.querySelector("#btn-close-cards-drawer"),
+        cardContainer: container.querySelector("#listen-card-container"),
+        cardInner: container.querySelector("#listen-card-inner"),
+        cardFrontText: container.querySelector("#listen-card-front-text"),
+        cardBackText: container.querySelector("#listen-card-back-text"),
+        cardsEmpty: container.querySelector("#listen-cards-empty"),
+        cardsNav: container.querySelector("#listen-cards-nav"),
+        btnCardPrev: container.querySelector("#btn-card-prev"),
+        btnCardFlip: container.querySelector("#btn-card-flip"),
+        btnCardNext: container.querySelector("#btn-card-next")
       };
 
       this.bindUIEvents();
@@ -360,6 +411,7 @@
       el.btnSettings.addEventListener("click", () => {
         el.settingsPopover.classList.toggle("open");
         if (el.drawer) el.drawer.classList.remove("open");
+        if (el.cardsDrawer) el.cardsDrawer.classList.remove("open");
       });
       el.btnCloseSettings.addEventListener("click", () => {
         el.settingsPopover.classList.remove("open");
@@ -381,6 +433,38 @@
       }
       el.btnCloseDrawer.addEventListener("click", () => el.drawer.classList.remove("open"));
 
+      // Flashcards Drawer toggle & actions
+      if (el.btnFlashcards) {
+        el.btnFlashcards.addEventListener("click", () => this.toggleFlashcardsDrawer());
+      }
+      if (el.btnCloseCards) {
+        el.btnCloseCards.addEventListener("click", () => el.cardsDrawer.classList.remove("open"));
+      }
+      if (el.btnGenCards) {
+        el.btnGenCards.addEventListener("click", () => this.generateFlashcardsFromPage());
+      }
+      if (el.cardContainer) {
+        el.cardContainer.addEventListener("click", () => this.flipCard());
+      }
+      if (el.btnCardFlip) {
+        el.btnCardFlip.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.flipCard();
+        });
+      }
+      if (el.btnCardPrev) {
+        el.btnCardPrev.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.prevFlashcard();
+        });
+      }
+      if (el.btnCardNext) {
+        el.btnCardNext.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.nextFlashcard();
+        });
+      }
+
       // Click outside popovers to close
       document.addEventListener("click", (e) => {
         if (el.settingsPopover && el.settingsPopover.classList.contains("open")) {
@@ -391,6 +475,11 @@
         if (el.drawer && el.drawer.classList.contains("open")) {
           if (!el.drawer.contains(e.target) && e.target !== el.btnBookmark) {
             el.drawer.classList.remove("open");
+          }
+        }
+        if (el.cardsDrawer && el.cardsDrawer.classList.contains("open")) {
+          if (!el.cardsDrawer.contains(e.target) && e.target !== el.btnFlashcards) {
+            el.cardsDrawer.classList.remove("open");
           }
         }
       });
@@ -493,7 +582,25 @@
       const browserGroup = document.createElement("optgroup");
       browserGroup.label = "Device Voices";
 
-      serverVoices.forEach(v => {
+      const standardCfVoices = [
+        { id: "cf:luna", name: "Luna (Neural Studio — Female)", gender: "female" },
+        { id: "cf:orion", name: "Orion (Neural Studio — Male)", gender: "male" },
+        { id: "cf:athena", name: "Athena (Neural Studio — Female)", gender: "female" },
+        { id: "cf:apollo", name: "Apollo (Neural Studio — Male)", gender: "male" },
+        { id: "cf:aurora", name: "Aurora (Neural Studio — Female)", gender: "female" },
+        { id: "cf:atlas", name: "Atlas (Neural Studio — Male)", gender: "male" }
+      ];
+
+      const allCf = [...standardCfVoices];
+      serverVoices.forEach(sv => {
+        if (!sv) return;
+        const id = sv.id || sv.voice || "";
+        if (id && !allCf.find(c => c.id === id)) {
+          allCf.push(sv);
+        }
+      });
+
+      allCf.forEach(v => {
         if (!v) return;
         const id = v.id || v.voice || "";
         const name = v.name || v.label || v.displayName || id;
@@ -540,6 +647,26 @@
             browserGroup.appendChild(opt);
           }
         });
+
+        // If localVoices was empty on first call, provide standard device fallback options
+        if (browserGroup.children.length === 0) {
+          const fallbackDeviceVoices = [
+            { name: "Microsoft Jenny (US English — Female)", id: "device:Microsoft%20Jenny", gender: "female" },
+            { name: "Microsoft David (US English — Male)", id: "device:Microsoft%20David", gender: "male" },
+            { name: "Microsoft Mark (US English — Male)", id: "device:Microsoft%20Mark", gender: "male" },
+            { name: "Microsoft Zira (US English — Female)", id: "device:Microsoft%20Zira", gender: "female" },
+            { name: "Microsoft Neerja (Indian English — Female)", id: "device:Microsoft%20Neerja", gender: "female" },
+            { name: "Microsoft Prabhat (Indian English — Male)", id: "device:Microsoft%20Prabhat", gender: "male" },
+            { name: "Microsoft Swara (Hindi — Female)", id: "device:Microsoft%20Swara", gender: "female" }
+          ];
+          fallbackDeviceVoices.forEach(fb => {
+            const opt = document.createElement("option");
+            opt.value = fb.id;
+            opt.textContent = fb.name;
+            browserGroup.appendChild(opt);
+            this.voiceMetaMap.set(fb.id, { id: fb.id, name: fb.name, gender: fb.gender, provider: "device" });
+          });
+        }
 
         // Listen for async voice loading on Chrome/Safari/Edge
         if (!this._voicesBound) {
@@ -932,28 +1059,33 @@
         }
       }
 
-      // Check if current block has text to read
+      // 1. Single source of truth: Always start reading from the active PDF viewer page
+      const viewerPage = (typeof window.getCurrentPdfPage === "function")
+        ? window.getCurrentPdfPage()
+        : (this.blocks[this.currentBlockIndex]?.pageNumber || 1);
+
+      if (this.blocks[this.currentBlockIndex]?.pageNumber !== viewerPage) {
+        const targetBlockIdx = this.blocks.findIndex(b => b.pageNumber === viewerPage && (b.spokenText || b.rawText || "").trim().length > 0);
+        if (targetBlockIdx !== -1) {
+          this.currentBlockIndex = targetBlockIdx;
+          this.currentSentenceIndex = 0;
+          this.updateBlockUI({ syncViewer: false });
+        }
+      }
+
+      // 2. Check if active block has text to read on this page
       let currBlock = this.blocks[this.currentBlockIndex];
       let currSpoken = currBlock?.sentences?.[this.currentSentenceIndex]?.spoken || currBlock?.spokenText || currBlock?.rawText;
       if (!currBlock || !currSpoken || !currSpoken.trim()) {
-        // Look within the SAME page first to avoid jumping across the document!
-        const samePageIdx = this.blocks.findIndex(b => b.pageNumber === currBlock?.pageNumber && (b.spokenText || b.rawText)?.trim());
+        const samePageIdx = this.blocks.findIndex(b => b.pageNumber === viewerPage && (b.spokenText || b.rawText || "").trim().length > 0);
         if (samePageIdx !== -1) {
           this.currentBlockIndex = samePageIdx;
           this.currentSentenceIndex = 0;
         } else {
-          this.elements.blockLabel.textContent = `Page ${currBlock?.pageNumber || 1} has no readable text.`;
+          this.elements.blockLabel.textContent = `Page ${viewerPage} has no readable text for speech.`;
           this.isPlaying = false;
           if (this.elements.btnPlayToggle) this.elements.btnPlayToggle.textContent = "▶";
           return;
-        }
-      }
-          const t = b.spokenText || b.rawText || (b.sentences && b.sentences[0] && (b.sentences[0].spoken || b.sentences[0].raw));
-          return t && t.trim().length > 0;
-        });
-        if (validIdx !== -1) {
-          this.currentBlockIndex = validIdx;
-          this.currentSentenceIndex = 0;
         }
       }
 
@@ -2010,6 +2142,211 @@
       if (chatInput) {
         chatInput.value = `Can you explain this part of the document in detail?\n\n"${sentence}"`;
         chatInput.focus();
+      }
+    }
+
+    /**
+     * Toggles flashcards drawer open/closed.
+     */
+    toggleFlashcardsDrawer() {
+      if (this.elements.cardsDrawer.classList.contains("open")) {
+        this.elements.cardsDrawer.classList.remove("open");
+      } else {
+        if (this.elements.settingsPopover) this.elements.settingsPopover.classList.remove("open");
+        if (this.elements.drawer) this.elements.drawer.classList.remove("open");
+        this.loadFlashcards(true);
+      }
+    }
+
+    /**
+     * Loads flashcards for the current document from localStorage or creates starter set.
+     */
+    loadFlashcards(openDrawer = false) {
+      this.flashcards = [];
+      this.currentCardIndex = 0;
+      this.isCardFlipped = false;
+
+      const storageKey = `studyreader_flashcards_${this.documentId || "default"}`;
+      try {
+        const saved = localStorage.getItem(storageKey);
+        if (saved) {
+          this.flashcards = JSON.parse(saved);
+        }
+      } catch (_) {}
+
+      // If no cards yet, generate automatically from available text
+      if (!this.flashcards || this.flashcards.length === 0) {
+        this.generateFlashcardsFromPage(false);
+      } else {
+        this.renderCurrentFlashcard();
+      }
+
+      if (openDrawer && this.elements.cardsDrawer) {
+        this.elements.cardsDrawer.classList.add("open");
+      }
+    }
+
+    /**
+     * Renders active flashcard front or back.
+     */
+    renderCurrentFlashcard() {
+      const el = this.elements;
+      if (!this.flashcards || this.flashcards.length === 0) {
+        if (el.cardsEmpty) el.cardsEmpty.style.display = "block";
+        if (el.cardContainer) el.cardContainer.style.display = "none";
+        if (el.cardsNav) el.cardsNav.style.display = "none";
+        if (el.cardsCounter) el.cardsCounter.textContent = "0 / 0";
+        return;
+      }
+
+      if (this.currentCardIndex >= this.flashcards.length) {
+        this.currentCardIndex = 0;
+      } else if (this.currentCardIndex < 0) {
+        this.currentCardIndex = this.flashcards.length - 1;
+      }
+
+      const card = this.flashcards[this.currentCardIndex];
+      this.isCardFlipped = false;
+      if (el.cardInner) el.cardInner.classList.remove("flipped");
+
+      if (el.cardFrontText) el.cardFrontText.textContent = card.question || card.front || "Concept Question";
+      if (el.cardBackText) el.cardBackText.textContent = card.answer || card.back || "Concept Explanation";
+
+      if (el.cardsEmpty) el.cardsEmpty.style.display = "none";
+      if (el.cardContainer) el.cardContainer.style.display = "flex";
+      if (el.cardsNav) el.cardsNav.style.display = "flex";
+      if (el.cardsCounter) el.cardsCounter.textContent = `${this.currentCardIndex + 1} / ${this.flashcards.length}`;
+    }
+
+    /**
+     * Flips active flashcard between front and back.
+     */
+    flipCard() {
+      if (!this.elements.cardInner) return;
+      this.isCardFlipped = !this.isCardFlipped;
+      this.elements.cardInner.classList.toggle("flipped", this.isCardFlipped);
+    }
+
+    /**
+     * Moves to next flashcard.
+     */
+    nextFlashcard() {
+      if (!this.flashcards || this.flashcards.length === 0) return;
+      this.currentCardIndex = (this.currentCardIndex + 1) % this.flashcards.length;
+      this.renderCurrentFlashcard();
+    }
+
+    /**
+     * Moves to previous flashcard.
+     */
+    prevFlashcard() {
+      if (!this.flashcards || this.flashcards.length === 0) return;
+      this.currentCardIndex = (this.currentCardIndex - 1 + this.flashcards.length) % this.flashcards.length;
+      this.renderCurrentFlashcard();
+    }
+
+    /**
+     * Generates flashcards from current page content (or document).
+     */
+    async generateFlashcardsFromPage(userInitiated = true) {
+      const viewerPage = (typeof window.getCurrentPdfPage === "function")
+        ? window.getCurrentPdfPage()
+        : (this.blocks[this.currentBlockIndex]?.pageNumber || 1);
+
+      const pageBlocks = this.blocks.filter(b => b.pageNumber === viewerPage);
+      const textToAnalyze = pageBlocks.map(b => b.rawText || b.spokenText || "").join("\n\n") ||
+                            this.blocks[this.currentBlockIndex]?.rawText || "";
+
+      if (!textToAnalyze.trim()) {
+        if (userInitiated) alert(`Page ${viewerPage} has insufficient text to generate flashcards.`);
+        return;
+      }
+
+      if (userInitiated && this.elements.btnGenCards) {
+        this.elements.btnGenCards.textContent = "⏳ Generating...";
+        this.elements.btnGenCards.disabled = true;
+      }
+
+      try {
+        const newCards = [];
+        // Extract key concept sentences / bullet points / definitions
+        const sentences = textToAnalyze.match(/[^.!?\n]+[.!?\n]+/g) || [textToAnalyze];
+        const seenConcepts = new Set((this.flashcards || []).map(c => (c.question || "").toLowerCase().trim()));
+
+        sentences.forEach(s => {
+          const trimmed = s.trim().replace(/^[-•*]\s*/, "");
+          if (trimmed.length < 25 || trimmed.length > 300) return;
+
+          // Check if sentence defines or explains something
+          if (/is\s+(a|an|the|defined\s+as|responsible\s+for|used\s+to)/i.test(trimmed) || /:/i.test(trimmed)) {
+            let question = "";
+            let answer = trimmed;
+
+            if (trimmed.includes(":")) {
+              const parts = trimmed.split(":");
+              const term = parts[0].trim();
+              const def = parts.slice(1).join(":").trim();
+              if (term.length > 2 && def.length > 5) {
+                question = `What is ${term}?`;
+                answer = def;
+              }
+            } else {
+              const match = trimmed.match(/^([^,]+?)\s+(?:is|refers to|represents)\s+(.+)$/i);
+              if (match) {
+                question = `What is ${match[1].trim()}?`;
+                answer = `${match[1].trim()} is ${match[2].trim()}`;
+              }
+            }
+
+            if (question && !seenConcepts.has(question.toLowerCase().trim())) {
+              seenConcepts.add(question.toLowerCase().trim());
+              newCards.push({
+                pageNumber: viewerPage,
+                question,
+                answer
+              });
+            }
+          }
+        });
+
+        // If fewer than 2 definition cards extracted, generate concept comprehension questions
+        if (newCards.length < 2 && sentences.length > 0) {
+          sentences.slice(0, 3).forEach((s, idx) => {
+            const clean = s.trim().replace(/^[-•*]\s*/, "");
+            if (clean.length > 20) {
+              const question = `Core Concept #${idx + 1} (Page ${viewerPage})`;
+              if (!seenConcepts.has(question.toLowerCase())) {
+                seenConcepts.add(question.toLowerCase());
+                newCards.push({
+                  pageNumber: viewerPage,
+                  question,
+                  answer: clean
+                });
+              }
+            }
+          });
+        }
+
+        if (newCards.length > 0) {
+          if (!this.flashcards) this.flashcards = [];
+          this.flashcards.unshift(...newCards);
+          const storageKey = `studyreader_flashcards_${this.documentId || "default"}`;
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(this.flashcards));
+          } catch (_) {}
+          this.currentCardIndex = 0;
+          this.renderCurrentFlashcard();
+          if (userInitiated) {
+            if (this.elements.cardsDrawer) this.elements.cardsDrawer.classList.add("open");
+          }
+        } else if (userInitiated) {
+          alert(`Could not extract new flashcards from Page ${viewerPage}.`);
+        }
+      } finally {
+        if (userInitiated && this.elements.btnGenCards) {
+          this.elements.btnGenCards.textContent = "⚡ Generate";
+          this.elements.btnGenCards.disabled = false;
+        }
       }
     }
   }

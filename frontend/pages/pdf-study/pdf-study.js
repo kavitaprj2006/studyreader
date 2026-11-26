@@ -682,6 +682,7 @@ async function loadSelectedPDF() {
     if (window.StudyReaderListenPlayer && currentPdfId) {
       window.StudyReaderListenPlayer.init({
         documentId: currentPdfId,
+        currentPage: currentPage,
         onPageChange: (targetPage) => {
           if (targetPage >= 1 && targetPage <= totalPages && targetPage !== currentPage) {
             goToPage(targetPage);
@@ -794,6 +795,11 @@ async function renderPage(pageNumber) {
     updateNavigation();
     pdfStatus.textContent = `Page ${currentPage} of ${totalPages}`;
 
+    // Always synchronize StudyReader Listen Player with the active PDF page
+    if (window.StudyReaderListenPlayer && typeof window.StudyReaderListenPlayer.syncPage === "function") {
+      window.StudyReaderListenPlayer.syncPage(currentPage);
+    }
+
   } catch (error) {
     // If render was cancelled due to zooming or fast page flips, do not treat as error
     if (error && error.name === "RenderingCancelledException") {
@@ -808,16 +814,18 @@ async function renderPage(pageNumber) {
    NAVIGATION & ZOOM CONTROLS
    ============================================================ */
 
+window.getCurrentPdfPage = function () {
+  return typeof currentPage === "number" ? currentPage : 1;
+};
+
 function goToPreviousPage() {
   if (!pdfDocument || currentPage <= 1) return;
-  currentPage -= 1;
-  renderPage(currentPage);
+  goToPage(currentPage - 1);
 }
 
 function goToNextPage() {
   if (!pdfDocument || currentPage >= totalPages) return;
-  currentPage += 1;
-  renderPage(currentPage);
+  goToPage(currentPage + 1);
 }
 
 function goToPage(pageNumber) {

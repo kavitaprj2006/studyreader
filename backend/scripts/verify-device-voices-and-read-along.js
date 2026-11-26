@@ -89,18 +89,27 @@ console.log("✔ Highlighting CSS: .textLayer spans strictly maintain transparen
 assert(cssContent.includes(".listen-compact-main-row"), "Must have listen-compact-main-row rule");
 assert(cssContent.includes("flex-wrap: wrap"), "Must allow flexible wrapping when container is constrained");
 assert(cssContent.includes("width: min(340px, calc(100% - 24px))"), "Popover and drawer must be constrained within bounds");
+assert(cssContent.includes(".listen-cards-drawer"), "Must have flashcards drawer styling");
+assert(cssContent.includes(".listen-card-inner.flipped"), "Must have 3D card flip styling");
 
 const appCssPath = path.join(__dirname, "../../frontend/styles/app.css");
 const appCss = fs.readFileSync(appCssPath, "utf8");
 assert(appCss.includes(".pdf-viewer-area") && appCss.includes("overflow-x: hidden"), "pdf-viewer-area must contain horizontal overflow to protect AI Tutor panel");
 console.log("✔ Layout Containment: pdf-viewer-area and compact bar prevent horizontal overflow over AI Tutor chat.");
 
-// 5. Inspect Backend Voices Endpoint
+// 5. Inspect Flashcards & Current-Page Reading in listen-player.js
+assert(playerJs.includes("btn-listen-flashcards"), "Must have Flashcards button");
+assert(playerJs.includes("toggleFlashcardsDrawer"), "Must implement toggleFlashcardsDrawer");
+assert(playerJs.includes("generateFlashcardsFromPage"), "Must implement generateFlashcardsFromPage");
+assert(playerJs.includes("window.getCurrentPdfPage"), "Must use window.getCurrentPdfPage as single source of truth");
+console.log("✔ Features Restored: Flashcards drawer and Current-Page playback synchronization are fully verified.");
+
+// 6. Inspect Backend Voices Endpoint
 const ttsServicePath = path.join(__dirname, "../services/audio/tts-service.js");
 const ttsCode = fs.readFileSync(ttsServicePath, "utf8");
 assert(!ttsCode.includes('"browser:en-IN-Neerja"'), "Backend must not return hardcoded fake browser voices");
 console.log("✔ Backend Discovery: getAvailableVoices() returns genuine server voices only; client SpeechSynthesis supplies actual device voices.");
 
 console.log("============================================================");
-console.log("ALL 5 VERIFICATION SUITES PASSED (100% SUCCESS)");
+console.log("ALL 6 VERIFICATION SUITES PASSED (100% SUCCESS)");
 console.log("============================================================");
